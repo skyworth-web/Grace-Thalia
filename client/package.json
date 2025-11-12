@@ -1,0 +1,23 @@
+{
+    "name": "interview-copilot-client",
+    "private": true,
+    "scripts": {
+      "dev": "vite",
+      "build": "vite build"
+    },
+    "dependencies": {
+      "react": "^18.3.0",
+      "react-dom": "^18.3.0",
+      "pdfjs-dist": "^3.10.111",
+      "mammoth": "^1.6.0"
+    },
+    "devDependencies": {
+      "typescript": "^5.5.3",
+      "vite": "^5.2.0",
+      "@vitejs/plugin-react": "^4.3.1",
+      "@types/chrome": "^0.0.251",
+      "@types/react": "^18.2.48",
+      "@types/react-dom": "^18.2.18"
+    }
+  }
+  

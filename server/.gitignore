@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+data/chroma/
+data/*.txt
+data/*.json
+*.db
+.DS_Store
+.env
