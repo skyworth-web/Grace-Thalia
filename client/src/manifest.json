@@ -34,7 +34,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["content/*.js", "content/*.css"],
+      "resources": ["content/*.js", "content/*.css", "pdf.worker.min.js"],
       "matches": ["<all_urls>"]
     }
   ]

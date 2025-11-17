@@ -1,9 +1,15 @@
+# server/chains/retrieval_chain.py
+
 from langchain.chains import ConversationalRetrievalChain
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain.chat_models import ChatOpenAI
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
@@ -17,9 +23,12 @@ def ingest_docs():
     # Check if API key is set
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        logger.error("❌ OPENAI_API_KEY not set in ingest_docs()")
         raise ValueError("OPENAI_API_KEY environment variable not set")
     
+    logger.info("🔄 Creating OpenAI embeddings...")
     emb = OpenAIEmbeddings(model="text-embedding-3-small")
+    logger.info("✅ Embeddings model initialized")
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
@@ -66,60 +75,53 @@ def ingest_docs():
                 doc.metadata = {"source": "job_description"}
             all_docs.extend(docs)
     
-    # Process profile info if available
-    profile_path = os.path.join(DATA_DIR, "profile.json")
-    if os.path.exists(profile_path):
-        import json
-        with open(profile_path, "r", encoding="utf-8") as f:
-            profile = json.load(f)
-        profile_text = f"Profile Information:\n"
-        if profile.get("name"):
-            profile_text += f"Name: {profile['name']}\n"
-        if profile.get("experience"):
-            profile_text += f"Experience: {profile['experience']}\n"
-        if profile.get("skills"):
-            profile_text += f"Skills: {profile['skills']}\n"
-        
-        if profile_text.strip():
-            docs = splitter.create_documents([profile_text])
-            for doc in docs:
-                doc.metadata = {"source": "profile"}
-            all_docs.extend(docs)
+    # Profile info removed - no longer needed
     
     if all_docs:
+        logger.info(f"📚 Adding {len(all_docs)} document chunks to vector store...")
         chroma.add_documents(all_docs)
         chroma.persist()
-        print(f"✅ Ingested {len(all_docs)} document chunks")
+        logger.info(f"✅ Successfully ingested {len(all_docs)} document chunks")
     else:
-        print("⚠️ No documents to ingest")
+        logger.warning("⚠️ No documents to ingest")
 
 def build_chain():
     """Build the conversational retrieval chain"""
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        logger.error("❌ OPENAI_API_KEY not set in build_chain()")
         raise ValueError("OPENAI_API_KEY environment variable not set")
+    
+    logger.info("🔄 Building conversational retrieval chain...")
+    logger.info("   Model: gpt-4o-mini")
     
     llm = ChatOpenAI(
         model="gpt-4o-mini",
         temperature=0.7,
         streaming=False
     )
+    logger.info("✅ LLM initialized")
     
+    logger.info("🔄 Loading embeddings model...")
     emb = OpenAIEmbeddings(model="text-embedding-3-small")
     
     # Load existing Chroma database
     if not os.path.exists(CHROMA_DIR):
+        logger.error("❌ Vector store not found")
         raise ValueError("Vector store not found. Please ingest documents first.")
     
+    logger.info("🔄 Loading Chroma vector store...")
     chroma = Chroma(
         persist_directory=CHROMA_DIR,
         embedding_function=emb
     )
+    logger.info("✅ Vector store loaded")
     
     retriever = chroma.as_retriever(
         search_type="similarity",
         search_kwargs={"k": 4}
     )
+    logger.info("✅ Retriever configured (k=4)")
     
     # Create chain with custom prompt
     from langchain.prompts import PromptTemplate
@@ -156,4 +158,5 @@ Answer:"""
         combine_docs_chain_kwargs={"prompt": QA_PROMPT}
     )
     
+    logger.info("✅ Conversational retrieval chain built successfully")
     return chain

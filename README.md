@@ -43,7 +43,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-4. Set your OpenAI API key (optional, can also set in extension):
+4. Set your OpenAI API key (required - must be set in server environment):
 ```bash
 export OPENAI_API_KEY="sk-your-key-here"  # On Windows: set OPENAI_API_KEY=sk-your-key-here
 ```
@@ -83,11 +83,10 @@ This will create a `dist` folder with the compiled extension.
 ## Usage
 
 1. **Setup**:
+   - Make sure the backend server is running with OPENAI_API_KEY set
    - Click the extension icon
-   - Enter your OpenAI API key
-   - Fill in optional profile information
    - Upload your resume (PDF, DOCX, or TXT)
-   - Paste the job description
+   - Optionally paste the job description
    - Click "Save & Embed" to process your documents
 
 2. **Start Interview**:

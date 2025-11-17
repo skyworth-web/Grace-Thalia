@@ -27,7 +27,7 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# (Optional) Set API key as environment variable
+# Set API key as environment variable (REQUIRED)
 # On Windows:
 set OPENAI_API_KEY=sk-your-key-here
 # On Mac/Linux:
@@ -84,16 +84,15 @@ Then reload the extension in Chrome (click the refresh icon on the extension car
 
 ### 5. First Use
 
-1. Click the extension icon in Chrome
-2. Enter your OpenAI API key
-3. Fill in your profile information (optional)
-4. Upload your resume (PDF, DOCX, or TXT)
-5. Paste the job description
-6. Click **Save & Embed** (wait for success message)
-7. Click **Start Interview Co-Pilot**
-8. Join a meeting on Google Meet, Zoom, or Teams
-9. Enable captions/transcripts in the meeting
-10. Watch for suggestions in the bottom-right corner!
+1. Make sure your server is running with OPENAI_API_KEY set
+2. Click the extension icon in Chrome
+3. Upload your resume (PDF, DOCX, or TXT)
+4. Optionally paste the job description
+5. Click **Save & Embed** (wait for success message)
+6. Click **Start Interview Co-Pilot**
+7. Join a meeting on Google Meet, Zoom, or Teams
+8. Enable captions/transcripts in the meeting
+9. Watch for suggestions in the bottom-right corner!
 
 ## Troubleshooting
 

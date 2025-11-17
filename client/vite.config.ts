@@ -44,6 +44,20 @@ export default defineConfig({
           // Icons directory might not exist yet - that's okay
           console.log("Icons directory not found - you'll need to create icon files");
         }
+        
+        // Copy PDF.js worker file
+        try {
+          const { existsSync } = require("fs");
+          const pdfWorkerSrc = resolve(__dirname, "node_modules/pdfjs-dist/build/pdf.worker.min.js");
+          const pdfWorkerDest = resolve(__dirname, "dist/pdf.worker.min.js");
+          
+          if (existsSync(pdfWorkerSrc)) {
+            copyFileSync(pdfWorkerSrc, pdfWorkerDest);
+            console.log("✓ PDF.js worker copied");
+          }
+        } catch (e: any) {
+          console.warn("Could not copy PDF.js worker:", e.message);
+        }
       },
     },
   ],
