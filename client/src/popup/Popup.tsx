@@ -1,4 +1,4 @@
-// Popup.tsx
+// client/src/popup/Popup.tsx
 import { useState, useEffect } from "react";
 import ResumeUploader from "./ResumeUploader";
 import JobInput from "./JobInput";

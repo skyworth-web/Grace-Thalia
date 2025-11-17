@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 from contextlib import asynccontextmanager
 from chains.retrieval_chain import ingest_docs, build_chain
+from chains.generator_chain import build_generator_chain
 import os
 import json
 import asyncio
@@ -281,6 +282,30 @@ async def stream(ws: WebSocket):
             logger.info("🔌 WebSocket connection closed")
         except:
             pass
+
+generator_chain = None
+@app.post("/generate")
+async def generate(payload: dict):
+    global generator_chain
+    transcript = payload.get("transcript", "")
+
+    if not transcript.strip():
+        return {"status": "error", "message": "Transcript is empty"}
+
+    try:
+        if generator_chain is None:
+            generator_chain = build_generator_chain()
+
+        result = generator_chain({"transcript": transcript})
+        answer = result["result"]
+
+        return {
+            "status": "ok",
+            "answer": answer
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/health")
 async def health():

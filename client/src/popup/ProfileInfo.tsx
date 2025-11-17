@@ -1,3 +1,5 @@
+// client/src/popup/ProfileInfo.tsx
+
 import { useState } from "react";
 
 interface ProfileInfoProps {

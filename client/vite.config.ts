@@ -1,122 +1,107 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
-import { resolve, dirname } from "path";
-import { copyFileSync, mkdirSync } from "fs";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const srcRoot = resolve(__dirname, "src");
+import { resolve } from "path";
+import {
+  copyFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  statSync,
+  rmSync,
+} from "fs";
 
 export default defineConfig({
-  root: srcRoot,
   plugins: [
     react(),
+
     {
-      name: "copy-manifest",
+      name: "copy-extension-files",
+      apply: "build",
+      enforce: "post",
       closeBundle() {
-        // Copy manifest.json to dist
-        const manifestSrc = resolve(srcRoot, "manifest.json");
-        const manifestDest = resolve(__dirname, "dist/manifest.json");
-        copyFileSync(manifestSrc, manifestDest);
-        
-        // Copy icons directory if it exists
-        const iconsSrc = resolve(srcRoot, "icons");
+        // 1) manifest.json → dist/
+        copyFileSync(
+          resolve(__dirname, "src/manifest.json"),
+          resolve(__dirname, "dist/manifest.json")
+        );
+
+        // 2) popup.html: dist/src/popup/popup.html → dist/popup/popup.html
+        const builtPopupHtml = resolve(__dirname, "dist/src/popup/popup.html");
+        const finalPopupDir = resolve(__dirname, "dist/popup");
+        if (existsSync(builtPopupHtml)) {
+          mkdirSync(finalPopupDir, { recursive: true });
+          copyFileSync(builtPopupHtml, resolve(finalPopupDir, "popup.html"));
+        } else {
+          console.warn("⚠️ popup.html not found at", builtPopupHtml);
+        }
+
+        // (optional) remove dist/src to keep dist clean
+        const distSrcDir = resolve(__dirname, "dist/src");
+        if (existsSync(distSrcDir)) {
+          rmSync(distSrcDir, { recursive: true, force: true });
+        }
+
+        // 3) raw content script → dist/content/contentRaw.js
+        const contentSrc = resolve(
+          __dirname,
+          "src/content/contentRaw.js"
+        );
+        const contentDestDir = resolve(__dirname, "dist/content");
+        mkdirSync(contentDestDir, { recursive: true });
+        if (existsSync(contentSrc)) {
+          copyFileSync(contentSrc, resolve(contentDestDir, "contentRaw.js"));
+        }
+
+        // 4) icons → dist/icons
+        const iconsSrc = resolve(__dirname, "src/icons");
         const iconsDest = resolve(__dirname, "dist/icons");
-        try {
-          mkdirSync(iconsDest, { recursive: true });
-          const { readdirSync, statSync, copyFileSync: copyFile } = require("fs");
-          const { join } = require("path");
-          
-          if (statSync(iconsSrc).isDirectory()) {
-            const files = readdirSync(iconsSrc);
-            files.forEach((file: string) => {
-              const srcPath = join(iconsSrc, file);
-              const destPath = join(iconsDest, file);
-              if (statSync(srcPath).isFile()) {
-                copyFile(srcPath, destPath, (err: Error) => {
-                  if (err) console.error(`Failed to copy ${file}:`, err);
-                });
-              }
-            });
+        mkdirSync(iconsDest, { recursive: true });
+
+        if (existsSync(iconsSrc)) {
+          for (const file of readdirSync(iconsSrc)) {
+            const s = resolve(iconsSrc, file);
+            const d = resolve(iconsDest, file);
+            if (statSync(s).isFile()) copyFileSync(s, d);
           }
-        } catch (e) {
-          // Icons directory might not exist yet - that's okay
-          console.log("Icons directory not found - you'll need to create icon files");
         }
-        
-        // Copy PDF.js worker file
-        try {
-          const { existsSync } = require("fs");
-          const pdfWorkerSrc = resolve(__dirname, "node_modules/pdfjs-dist/build/pdf.worker.min.js");
-          const pdfWorkerDest = resolve(__dirname, "dist/pdf.worker.min.js");
-          
-          if (existsSync(pdfWorkerSrc)) {
-            copyFileSync(pdfWorkerSrc, pdfWorkerDest);
-            console.log("✓ PDF.js worker copied");
-          }
-        } catch (e: any) {
-          console.warn("Could not copy PDF.js worker:", e.message);
-        }
+
+        // 5) pdf.worker → dist/
+        const pdfSrc = resolve(
+          __dirname,
+          "node_modules/pdfjs-dist/build/pdf.worker.min.js"
+        );
+        const pdfDest = resolve(__dirname, "dist/pdf.worker.min.js");
+        if (existsSync(pdfSrc)) copyFileSync(pdfSrc, pdfDest);
       },
     },
   ],
+
   build: {
-    outDir: resolve(__dirname, "dist"),
     emptyOutDir: true,
+    outDir: "dist",
     rollupOptions: {
       input: {
-        popup: resolve(srcRoot, "popup/popup.html"),
-        "background/background": resolve(srcRoot, "background/background.ts"),
-        "content/contentScript": resolve(srcRoot, "content/contentScript.tsx"),
+        popup: resolve(__dirname, "src/popup/popup.html"),
+        background: resolve(__dirname, "src/background/background.ts"),
+        // content is copied raw, not bundled
       },
       output: {
-        entryFileNames: (chunkInfo) => {
-          // For HTML entries, the script inside becomes the entry
-          // We need to handle the actual JS entry point
-          const facadeModuleId = chunkInfo.facadeModuleId || "";
-          
-          if (facadeModuleId.includes("popup/index.tsx")) {
-            return "popup/index.js";
-          }
-          if (facadeModuleId.includes("background/background.ts")) {
-            return "background/background.js";
-          }
-          if (facadeModuleId.includes("content/contentScript.tsx")) {
-            return "content/contentScript.js";
-          }
-          
-          // Fallback
-          const name = chunkInfo.name || "entry";
-          if (name.includes("background")) {
-            return "background/background.js";
-          }
-          if (name.includes("content")) {
-            return "content/contentScript.js";
-          }
-          
-          const fileName = facadeModuleId.split("/").pop()?.replace(/\.tsx?$/, "") || "entry";
-          return `${fileName}.js`;
+        inlineDynamicImports: false,
+        entryFileNames: (chunk) => {
+          const id = chunk.facadeModuleId || "";
+          if (id.includes("popup/popup.html")) return "popup/popup.js";
+          if (id.includes("background")) return "background/background.js";
+          return "chunks/[name].js";
         },
-        chunkFileNames: "chunks/[name]-[hash].js",
-        assetFileNames: (assetInfo) => {
-          // Keep HTML files in popup directory
-          if (assetInfo.name?.endsWith(".html")) {
-            return "popup/[name][extname]";
-          }
-          // Put popup JS files in popup directory
-          if (assetInfo.name?.includes("popup.html.js")) {
-            return "popup/[name]";
-          }
-          return "assets/[name]-[hash].[ext]";
-        },
+        chunkFileNames: "chunks/[name].js",
+        assetFileNames: "assets/[name][extname]",
       },
     },
   },
+
   resolve: {
     alias: {
-      "@": srcRoot,
+      "@": resolve(__dirname, "src"),
     },
   },
 });
-

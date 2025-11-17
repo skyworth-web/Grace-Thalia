@@ -17,7 +17,7 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["chrome"]
   },
-  "include": ["src"],
+  "include": ["src", "public/content/dummy.js"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
 

@@ -1,3 +1,5 @@
+# server/chains/summarizer_chain.py
+
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI

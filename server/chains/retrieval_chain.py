@@ -160,3 +160,22 @@ Answer:"""
     
     logger.info("✅ Conversational retrieval chain built successfully")
     return chain
+
+
+def build_retriever(k: int = 5):
+    """Load Chroma vector store and return a retriever instance."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable not set")
+
+    emb = OpenAIEmbeddings(model="text-embedding-3-small")
+
+    if not os.path.exists(CHROMA_DIR):
+        raise ValueError("Vector store not found. Please ingest documents first.")
+
+    chroma = Chroma(
+        persist_directory=CHROMA_DIR,
+        embedding_function=emb
+    )
+
+    return chroma.as_retriever(search_type="similarity", search_kwargs={"k": k})

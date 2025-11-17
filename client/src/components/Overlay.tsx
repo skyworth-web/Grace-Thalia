@@ -2,103 +2,148 @@ import { useEffect, useState } from "react";
 
 export default function Overlay() {
   const [text, setText] = useState("");
-  const [isVisible, setIsVisible] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const [visible, setVisible] = useState(true);
 
   useEffect(() => {
-    // Listen for messages from background script
-    const messageListener = (m: any) => {
-      if (m.type === "suggestion") {
-        setText((prev) => {
-          // Append new text, but limit total length
-          const newText = prev + m.text;
-          return newText.slice(-2000); // Keep last 2000 chars
-        });
-        setIsVisible(true);
-      }
+    const listener = (e: any) => {
+      setText((prev) =>
+        (prev + "\n" + e.detail).slice(-6000)
+      );
     };
 
-    // Listen for custom events from content script
-    const eventListener = (e: CustomEvent) => {
-      setText((prev) => {
-        const newText = prev + e.detail;
-        return newText.slice(-2000);
-      });
-      setIsVisible(true);
-    };
-
-    chrome.runtime.onMessage.addListener(messageListener);
-    window.addEventListener("copilot-suggestion", eventListener as EventListener);
-
-    // Auto-hide after 30 seconds of no updates
-    const hideTimer = setInterval(() => {
-      setIsVisible(false);
-    }, 30000);
-
-    return () => {
-      chrome.runtime.onMessage.removeListener(messageListener);
-      window.removeEventListener("copilot-suggestion", eventListener as EventListener);
-      clearInterval(hideTimer);
-    };
+    window.addEventListener("copilot-suggestion", listener);
+    return () => window.removeEventListener("copilot-suggestion", listener);
   }, []);
 
-  if (!isVisible && !text) return null;
+  const clearText = () => {
+    setText("");
+    setAnswer("");
+  };
+
+  const generate = async () => {
+    if (!text.trim()) return;
+
+    setAnswer("⏳ Generating answer...");
+
+    try {
+      const res = await fetch("http://localhost:8000/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcript: text })
+      });
+
+      const data = await res.json();
+      setAnswer(data.answer || "⚠️ No answer produced.");
+    } catch {
+      setAnswer("❌ Server error.");
+    }
+  };
+
+  if (!visible) return null;
 
   return (
     <div
       style={{
         position: "fixed",
-        bottom: "1.5rem",
-        right: "1.5rem",
-        width: "360px",
-        maxHeight: "400px",
-        background: "rgba(20, 20, 20, 0.95)",
+        bottom: "20px",
+        right: "20px",
+        width: "380px",
+        height: "420px",
+        background: "rgba(20, 20, 20, 0.75)",
+        backdropFilter: "blur(12px)",
         color: "white",
-        borderRadius: "12px",
-        padding: "1rem",
-        fontFamily: "Inter, -apple-system, sans-serif",
-        zIndex: 2147483647,
-        boxShadow: "0 8px 32px rgba(0, 0, 0, 0.3)",
-        border: "1px solid rgba(255, 255, 255, 0.1)",
-        overflow: "auto",
-        transition: "opacity 0.3s ease",
-        opacity: isVisible ? 1 : 0.7,
+        zIndex: 999999999,
+        borderRadius: "14px",
+        padding: "16px",
+        display: "flex",
+        flexDirection: "column",
+        fontFamily: "Inter, sans-serif",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)"
       }}
     >
-      <div
-        style={{
-          fontSize: "0.75rem",
-          opacity: 0.7,
-          marginBottom: "0.5rem",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span>💬 Co-Pilot Suggestion</span>
+      <div style={{ display: "flex", justifyContent: "space-between" }}>
+        <strong style={{ fontSize: "14px", opacity: 0.9 }}>
+          🧠 Interview Co-Pilot
+        </strong>
+
         <button
-          onClick={() => setIsVisible(false)}
+          onClick={() => setVisible(false)}
           style={{
             background: "transparent",
             border: "none",
-            color: "white",
+            fontSize: "20px",
             cursor: "pointer",
-            fontSize: "1.2rem",
-            opacity: 0.7,
+            color: "white",
+            opacity: 0.6
           }}
         >
           ×
         </button>
       </div>
+
       <div
         style={{
+          flex: 1,
+          overflowY: "auto",
+          marginTop: "10px",
           whiteSpace: "pre-wrap",
-          fontSize: "0.875rem",
-          lineHeight: "1.5",
-          wordWrap: "break-word",
+          fontSize: "13px",
         }}
       >
-        {text || "Listening for interview questions..."}
+        {text || "Listening for captions..."}
       </div>
+
+      <div style={{ display: "flex", marginTop: "10px", gap: "8px" }}>
+        <button
+          onClick={clearText}
+          style={{
+            flex: 1,
+            padding: "10px",
+            borderRadius: "8px",
+            border: "none",
+            background: "#ff5252",
+            color: "white",
+            cursor: "pointer",
+            fontWeight: 600
+          }}
+        >
+          Clear
+        </button>
+
+        <button
+          onClick={generate}
+          style={{
+            flex: 1,
+            padding: "10px",
+            borderRadius: "8px",
+            border: "none",
+            background: "#4CAF50",
+            color: "white",
+            cursor: "pointer",
+            fontWeight: 600
+          }}
+        >
+          Generate
+        </button>
+      </div>
+
+      {answer && (
+        <div
+          style={{
+            marginTop: "12px",
+            background: "rgba(255,255,255,0.1)",
+            padding: "10px",
+            borderRadius: "8px",
+            fontSize: "13px",
+            whiteSpace: "pre-wrap"
+          }}
+        >
+          <strong>AI Answer:</strong>
+          <br />
+          {answer}
+        </div>
+      )}
     </div>
   );
 }

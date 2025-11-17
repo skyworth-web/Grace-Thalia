@@ -1,3 +1,5 @@
+// client/src/popup/ResumeUploader.tsx
+
 import { useState, useRef } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import mammoth from "mammoth";
