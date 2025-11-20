@@ -1,244 +1,194 @@
-// Plain content script – NO imports, NO bundler tricks.
-// Builds the overlay and handles captions + AI answer.
-
 (function () {
-    console.log("[CoPilot] content script loaded");
-  
-    // ---------- Overlay UI ----------
-  
+    console.log("[CoPilot] overlay UI loaded");
+
     function createOverlay() {
-      if (document.getElementById("interview-copilot-overlay")) return;
-  
-      var container = document.createElement("div");
-      container.id = "interview-copilot-overlay";
-  
-      Object.assign(container.style, {
-        position: "fixed",
-        bottom: "20px",
-        right: "20px",
-        width: "380px",
-        height: "420px",
-        background: "rgba(15, 15, 15, 0.85)",
-        color: "white",
-        borderRadius: "14px",
-        padding: "16px",
-        fontFamily: "Inter, -apple-system, system-ui, sans-serif",
-        zIndex: "2147483647",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        display: "flex",
-        flexDirection: "column",
-      });
-  
-      container.innerHTML = [
-        '<div style="display:flex;justify-content:space-between;align-items:center;">',
-        '  <strong style="font-size:14px;opacity:0.9;">🧠 Interview Co-Pilot</strong>',
-        '  <button id="copilot-close-btn" style="background:transparent;border:none;color:white;font-size:20px;cursor:pointer;opacity:0.6;">×</button>',
-        "</div>",
-        '<div id="copilot-transcript" style="flex:1;overflow-y:auto;margin-top:10px;padding-right:6px;font-size:13px;white-space:pre-wrap;">',
-        "  Listening for captions...",
-        "</div>",
-        '<div style="display:flex;margin-top:10px;gap:8px;">',
-        '  <button id="copilot-clear-btn" style="flex:1;background:#ff6b6b;border:none;border-radius:8px;padding:10px;color:white;font-weight:600;cursor:pointer;">Clear</button>',
-        '  <button id="copilot-generate-btn" style="flex:1;background:#4caf50;border:none;border-radius:8px;padding:10px;color:white;font-weight:600;cursor:pointer;">Generate</button>',
-        "</div>",
-        '<div id="copilot-answer" style="margin-top:12px;background:rgba(255,255,255,0.08);padding:10px;border-radius:8px;font-size:13px;white-space:pre-wrap;display:none;"></div>',
-      ].join("");
-  
-      document.body.appendChild(container);
-  
-      var transcriptDiv = container.querySelector("#copilot-transcript");
-      var answerDiv = container.querySelector("#copilot-answer");
-      var clearBtn = container.querySelector("#copilot-clear-btn");
-      var generateBtn = container.querySelector("#copilot-generate-btn");
-      var closeBtn = container.querySelector("#copilot-close-btn");
-  
-      var transcriptText = "";
-  
-      function updateTranscript(text) {
-        transcriptText = (transcriptText + " " + text).trim();
-        if (!transcriptText) {
-          transcriptDiv.textContent = "Listening for captions...";
-        } else {
-          if (transcriptText.length > 6000) {
-            transcriptText = transcriptText.slice(transcriptText.length - 6000);
-          }
-          transcriptDiv.textContent = transcriptText;
-        }
-      }
-  
-      function showAnswer(text) {
-        answerDiv.style.display = "block";
-        answerDiv.textContent = text;
-      }
-  
-      // Expose helpers so we can call them later
-      window.__copilotUpdateTranscript = updateTranscript;
-      window.__copilotShowAnswer = showAnswer;
-  
-      clearBtn.onclick = function () {
-        transcriptText = "";
-        transcriptDiv.textContent = "Listening for captions...";
-        answerDiv.textContent = "";
-        answerDiv.style.display = "none";
-      };
-  
-      generateBtn.onclick = function () {
-        var trimmed = (transcriptText || "").trim();
-        if (!trimmed) return;
-  
-        showAnswer("⏳ Generating answer...");
-  
-        fetch("http://localhost:8000/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ transcript: trimmed }),
-        })
-          .then(function (res) {
-            return res.json();
-          })
-          .then(function (data) {
-            showAnswer(data.answer || "⚠️ No answer generated.");
-          })
-          .catch(function (err) {
-            console.error("[CoPilot] generate error", err);
-            showAnswer("❌ Server error while generating answer.");
-          });
-      };
-  
-      closeBtn.onclick = function () {
-        container.style.display = "none";
-      };
+        if (document.getElementById("copilot-overlay")) return;
+
+        // ---------- CONTAINER ----------
+        const box = document.createElement("div");
+        box.id = "copilot-overlay";
+
+        Object.assign(box.style, {
+            position: "fixed",
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "1000px",
+            height: "674px",
+            background: "rgba(20, 20, 20, 0.65)",
+            color: "white",
+            borderRadius: "16px",
+            zIndex: "2147483647",
+            boxShadow: "0 10px 40px rgba(0,0,0,0.6)",
+            display: "flex",
+            flexDirection: "column",
+            padding: "16px",
+            border: "1px solid rgba(255,255,255,0.15)",
+            cursor: "default",
+        });
+
+        // ---------- MAKE DRAGGABLE ----------
+        let isDragging = false;
+        let offsetX = 0;
+        let offsetY = 0;
+
+        box.addEventListener("mousedown", (e) => {
+            if (e.target.classList.contains("copilot-header")) {
+                isDragging = true;
+                offsetX = e.clientX - box.getBoundingClientRect().left;
+                offsetY = e.clientY - box.getBoundingClientRect().top;
+            }
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (isDragging) {
+                box.style.left = `${e.clientX - offsetX}px`;
+                box.style.top = `${e.clientY - offsetY}px`;
+                box.style.transform = "none";
+            }
+        });
+
+        document.addEventListener("mouseup", () => {
+            isDragging = false;
+        });
+
+        // ---------- UI HTML ----------
+        // Inside createOverlay()
+box.innerHTML = `
+<div class="copilot-header" style="
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    padding-bottom:6px;
+    cursor:move;
+">
+    <strong style="font-size:16px;">🧠 Interview Co-Pilot+</strong>
+    <button id="copilot-close" style="
+        background:transparent;
+        color:white;
+        border:none;
+        font-size:20px;
+        cursor:pointer;
+        opacity:0.7;
+    ">×</button>
+</div>
+
+<div id="copilot-answer" style="
+    padding:6px 0;
+    font-size:20px;
+    white-space:pre-wrap;
+    border-bottom: 1px solid rgba(255,255,255,0.3); /* thin line */
+    overflow-y:auto;
+    max-height:150px;
+"></div>
+
+<div id="copilot-transcript" style="
+    flex:1;
+    padding:6px 0;
+    font-size:18px;
+    white-space:pre-wrap;
+    overflow-y:auto;
+">Listening…</div>
+
+<div style="
+    display:flex;
+    gap:10px;
+    flex-shrink:0;
+    margin-top:8px;
+">
+    <button id="copilot-clear" style="
+        flex:1;
+        background:#ff4d4d;
+        border:none;
+        padding:10px;
+        border-radius:8px;
+        cursor:pointer;
+        font-weight:600;
+        color:white;
+    ">Clear</button>
+
+    <button id="copilot-generate" style="
+        flex:1;
+        background:#4caf50;
+        border:none;
+        padding:10px;
+        border-radius:8px;
+        cursor:pointer;
+        font-weight:600;
+        color:white;
+    ">Generate</button>
+</div>
+`;
+
+
+        document.body.appendChild(box);
+
+        // ---------- UI ELEMENTS ----------
+        const transcriptDiv = box.querySelector("#copilot-transcript");
+        const answerDiv = box.querySelector("#copilot-answer");
+        const clearBtn = box.querySelector("#copilot-clear");
+        const generateBtn = box.querySelector("#copilot-generate");
+        const closeBtn = box.querySelector("#copilot-close");
+
+        let transcriptText = "";
+        let streamedAnswer = "";
+
+        // ---------- PUBLIC FUNCTIONS ----------
+        window.__copilotUpdateTranscript = function (text) {
+            transcriptText += " " + text;
+            if (transcriptText.length > 8000)
+                transcriptText = transcriptText.slice(transcriptText.length - 8000);
+
+            transcriptDiv.textContent = transcriptText.trim();
+            transcriptDiv.scrollTop = transcriptDiv.scrollHeight; // Always scroll to bottom
+        };
+
+        window.__copilotStreamAnswer = function (chunk) {
+            streamedAnswer += chunk;
+            answerDiv.style.display = "block";
+            answerDiv.textContent = streamedAnswer;
+            answerDiv.scrollTop = 0; // Keep answer at top
+        };
+
+        // ---------- BUTTON HANDLERS ----------
+        clearBtn.onclick = () => {
+            transcriptText = "";
+            streamedAnswer = "";
+            transcriptDiv.textContent = "Listening…";
+            answerDiv.style.display = "none";
+            answerDiv.textContent = "";
+        };
+
+        generateBtn.onclick = async () => {
+            streamedAnswer = "";
+            answerDiv.style.display = "block";
+            answerDiv.textContent = "";
+        
+            const res = await fetch("http://localhost:8000/generate-stream", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ transcript: transcriptText }),
+            });
+        
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+        
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                streamedAnswer += chunk;
+                answerDiv.textContent = streamedAnswer;
+            }
+        };
+        
+
+        closeBtn.onclick = () => box.style.display = "none";
     }
-  
-    if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", createOverlay);
-    } else {
-      createOverlay();
-    }
-  
-    // ---------- Caption capture ----------
-  
-    var lastCaption = "";
-    var captionBuffer = "";
-    var captionTimeout = null;
-  
-    function extractGoogleMeetCaptions() {
-      var live = document.querySelectorAll("[data-requested-caption]");
-      if (live.length > 0) {
-        return Array.from(live)
-          .map(function (el) {
-            return (el.textContent || "").trim();
-          })
-          .join(" ");
-      }
-  
-      var items = document.querySelectorAll(
-        "[data-speaker-id], [data-speaker-text]"
-      );
-      return Array.from(items)
-        .map(function (el) {
-          return (el.textContent || "").trim();
-        })
-        .join(" ");
-    }
-  
-    function extractZoomCaptions() {
-      var items = document.querySelectorAll(
-        ".transcript-view-lines__line, .transcript-view-line, .zmu-transcript-line"
-      );
-      return Array.from(items)
-        .map(function (el) {
-          return (el.textContent || "").trim();
-        })
-        .filter(Boolean)
-        .join(" ");
-    }
-  
-    function extractTeamsCaptions() {
-      var items = document.querySelectorAll(
-        '[data-tid="closed-caption-text"], .caption-text, .ui-chat__message__content'
-      );
-      return Array.from(items)
-        .map(function (el) {
-          return (el.textContent || "").trim();
-        })
-        .filter(Boolean)
-        .join(" ");
-    }
-  
-    function captureCaptions() {
-      var url = window.location.href;
-      var currentCaption = "";
-  
-      if (url.indexOf("meet.google.com") !== -1) {
-        currentCaption = extractGoogleMeetCaptions();
-      } else if (url.indexOf("zoom.us") !== -1) {
-        currentCaption = extractZoomCaptions();
-      } else if (url.indexOf("teams.microsoft.com") !== -1) {
-        currentCaption = extractTeamsCaptions();
-      }
-  
-      if (!currentCaption || currentCaption.length < 10) return;
-      if (currentCaption === lastCaption) return;
-      lastCaption = currentCaption;
-  
-      captionBuffer += " " + currentCaption;
-  
-      if (captionTimeout !== null) {
-        clearTimeout(captionTimeout);
-      }
-  
-      captionTimeout = setTimeout(function () {
-        var cleaned = captionBuffer.trim();
-        captionBuffer = "";
-        if (!cleaned) return;
-  
-        // send to background
-        try {
-          chrome.runtime.sendMessage({ type: "caption", text: cleaned });
-        } catch (e) {
-          console.warn("[CoPilot] chrome.runtime not available?", e);
-        }
-  
-        // also update local overlay
-        try {
-          if (window.__copilotUpdateTranscript) {
-            window.__copilotUpdateTranscript(cleaned);
-          }
-        } catch (e2) {
-          console.warn("[CoPilot] updateTranscript failed", e2);
-        }
-      }, 1500);
-    }
-  
-    var observer = new MutationObserver(function () {
-      captureCaptions();
-    });
-  
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-  
-    setInterval(captureCaptions, 1000);
-  
-    // ---------- Receive AI suggestions from backend (via background) ----------
-  
-    chrome.runtime.onMessage.addListener(function (message) {
-      if (message.type === "suggestion") {
-        try {
-          var prev = window.__copilot_stream_buffer || "";
-          var next = prev + (message.text || "");
-          window.__copilot_stream_buffer = next;
-  
-          if (window.__copilotShowAnswer) {
-            window.__copilotShowAnswer(next);
-          }
-        } catch (e) {
-          console.warn("[CoPilot] failed to show suggestion", e);
-        }
-      }
-    });
-  })();
-  
+
+    // Create overlay immediately
+    if (document.readyState === "loading")
+        document.addEventListener("DOMContentLoaded", createOverlay);
+    else
+        createOverlay();
+})();

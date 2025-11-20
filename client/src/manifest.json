@@ -6,6 +6,7 @@
 
   "permissions": [
     "scripting",
+    "tabCapture",
     "activeTab",
     "storage"
   ],
