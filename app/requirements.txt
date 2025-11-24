@@ -1,0 +1,9 @@
+PyQt6
+openai>=1.3.0
+sounddevice
+numpy
+pydub
+python-docx
+PyPDF2
+sentence-transformers
+keyboard

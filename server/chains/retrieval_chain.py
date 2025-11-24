@@ -5,7 +5,7 @@ import logging
 from operator import itemgetter
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from langchain_core.prompts import PromptTemplate
@@ -27,16 +27,17 @@ def ingest_docs() -> None:
     and store them in a persistent Chroma vector store.
     """
     os.makedirs(DATA_DIR, exist_ok=True)
-    os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-
+    # Clean out old vector store
     import shutil
     if os.path.exists(CHROMA_DIR):
         shutil.rmtree(CHROMA_DIR)
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
+    embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+
+    # Create Chroma store
     chroma = Chroma(
         embedding_function=embeddings,
         persist_directory=CHROMA_DIR,
@@ -44,7 +45,7 @@ def ingest_docs() -> None:
 
     docs = []
 
-    # Resume
+    # Resume ingestion
     resume_path = os.path.join(DATA_DIR, "resume.txt")
     if os.path.exists(resume_path):
         with open(resume_path, "r", encoding="utf-8") as f:
@@ -54,7 +55,7 @@ def ingest_docs() -> None:
                 d.metadata = {"source": "resume"}
                 docs.append(d)
 
-    # Job description
+    # Job description ingestion
     job_path = os.path.join(DATA_DIR, "job.txt")
     if os.path.exists(job_path):
         with open(job_path, "r", encoding="utf-8") as f:
@@ -68,8 +69,9 @@ def ingest_docs() -> None:
         logger.warning("⚠ No documents to ingest")
         return
 
+    # Add docs (auto-persist on write)
     chroma.add_documents(docs)
-    chroma.persist()
+
     logger.info("✅ Ingestion complete (%d chunks)", len(docs))
 
 
@@ -122,8 +124,7 @@ Answer:
 """
     )
 
-    # Base LCEL pipeline:
-    # {question, chat_history} -> {"context", "question", "chat_history"} -> prompt -> llm -> text
+    # LCEL graph
     base_chain = (
         RunnableMap(
             {
@@ -137,7 +138,7 @@ Answer:
         | StrOutputParser()
     )
 
-    # Wrap so main.py can still do: result = chain.invoke(...); answer = result["answer"]
+    # Match old ConversationalRetrievalChain interface
     chain = base_chain | RunnableLambda(lambda text: {"answer": text})
 
     logger.info("✅ LCEL Retrieval chain ready")
