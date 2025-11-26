@@ -12,6 +12,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
+import sounddevice as sd
 
 # ---------------------------
 # Logging
@@ -198,6 +199,29 @@ async def stt(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"STT error: {e}")
         return {"transcript": "", "error": str(e)}
+
+# ---------------------------
+# Audio input stream
+# ---------------------------
+def audio_callback(indata, frames, time, status):
+    if status:
+        print(status)
+    # Process audio data here
+
+def get_default_input_device():
+    devices = sd.query_devices()
+    for i, device in enumerate(devices):
+        if device['max_input_channels'] > 0:
+            return i
+    raise RuntimeError("No input devices available")
+
+try:
+    default_device = get_default_input_device()
+    with sd.InputStream(callback=audio_callback, channels=1, samplerate=16000, device=default_device):
+        # Your streaming logic here
+        pass
+except Exception as e:
+    print(f"Error initializing audio stream: {e}")
 
 # ---------------------------
 # Run server
