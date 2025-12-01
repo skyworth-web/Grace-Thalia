@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QTextEdit, QFileDialog
 )
-from PyQt6.QtCore import QTimer, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from services.api_client import APIClient
 from audio.mic_stream import MicStream
 from ui.caption_window import CaptionWindow
@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 class MainWindow(QWidget):
-    # Signal to safely pass transcripts to the GUI thread
+    # Signal that carries transcript text safely to the GUI thread
     transcript_received = pyqtSignal(str)
 
     def __init__(self):
@@ -27,14 +27,14 @@ class MainWindow(QWidget):
         self.api = APIClient()
         self.caption_window = CaptionWindow()
 
-        # MicStream, callback is handle_transcript (runs in worker thread)
+        # Connect signal to handler
+        self.transcript_received.connect(self.handle_transcript)
+
+        # MicStream callback will be the SIGNAL EMITTER, not handle_transcript directly
         self.streamer = MicStream(
             stt_url="http://localhost:8000/stt",
-            callback=self.handle_transcript
+            callback=self.transcript_received.emit
         )
-
-        # Connect signal to slot that runs on the GUI thread
-        self.transcript_received.connect(self.on_transcript_ui)
 
         self.init_ui()
 
@@ -92,10 +92,8 @@ class MainWindow(QWidget):
         # List available devices
         self.list_devices()
 
-    # ------------------------------------------------------------------ #
-    # Device handling
-    # ------------------------------------------------------------------ #
     def list_devices(self):
+        """List all available input devices and add to combo box."""
         devices = sd.query_devices()
         self.device_combo.clear()
         for i, device in enumerate(devices):
@@ -106,25 +104,28 @@ class MainWindow(QWidget):
         for i in range(self.device_combo.count()):
             logging.info(f"Device {i}: {self.device_combo.itemText(i)}")
 
-    def select_device(self):
+    def select_device(self, index: int):
+        """Handle device selection from combo box."""
         device_index = self.device_combo.currentData()
         if device_index is None:
             return
 
         device_info = sd.query_devices(device_index)
+
         if device_info["max_input_channels"] == 0:
-            logging.error(f"❌ Selected device '{device_info['name']}' does not support input channels.")
+            logging.error(
+                f"❌ Selected device '{device_info['name']}' does not support input channels."
+            )
             self.answer_box.setText(
                 f"❌ Device '{device_info['name']}' does not support input channels."
             )
             return
 
         self.streamer.device_index = device_index
-        logging.info(f"Selected device: {self.device_combo.currentText()} (index {device_index})")
+        logging.info(
+            f"Selected device: {self.device_combo.currentText()} (index {device_index})"
+        )
 
-    # ------------------------------------------------------------------ #
-    # Resume / JD ingest
-    # ------------------------------------------------------------------ #
     def upload_resume(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Select Resume", "", "Documents (*.pdf *.doc *.docx)"
@@ -142,15 +143,11 @@ class MainWindow(QWidget):
 
             jd = self.jd_box.toPlainText() or None
 
-            # NOTE: backend /ingest currently expects plain text; adjust if needed.
             response = self.api.ingest(resume, jd)
             self.answer_box.setText(str(response))
         except Exception as e:
             self.answer_box.setText(f"⚠️ Error: {str(e)}")
 
-    # ------------------------------------------------------------------ #
-    # Live captions controls
-    # ------------------------------------------------------------------ #
     def start_captions(self):
         self.caption_window.show()
         self.streamer.start_recording()
@@ -158,35 +155,20 @@ class MainWindow(QWidget):
     def stop_captions(self):
         self.streamer.stop_recording()
 
-    # ------------------------------------------------------------------ #
-    # Called from MicStream's background thread
-    # ------------------------------------------------------------------ #
-    def handle_transcript(self, text: str):
-        """
-        This runs in the MicStream worker thread.
-        Do NOT touch Qt widgets directly here.
-        Just emit a signal.
-        """
-        logging.info(f"handle_transcript got text: {text!r}")
-        self.transcript_received.emit(text)
+    # --------- Called in the GUI thread via signal ---------
 
-    # ------------------------------------------------------------------ #
-    # Runs on the Qt GUI thread (safe to touch widgets)
-    # ------------------------------------------------------------------ #
-    def on_transcript_ui(self, text: str):
-        logging.info(f"[MainWindow] Updating caption window on UI thread with: {text!r}")
+    def handle_transcript(self, text: str):
+        """Receive real-time transcript (on GUI thread)."""
+        logging.info(f"handle_transcript got text: {text!r}")
         self.caption_window.update_caption(text)
 
-        # If you want to also stream GPT answers live, you can uncomment this:
-        # threading.Thread(
-        #     target=self.get_answer,
-        #     args=(text,),
-        #     daemon=True
-        # ).start()
+        # (optional) Start GPT answer streaming in background
+        threading.Thread(
+            target=self.get_answer,
+            args=(text,),
+            daemon=True,
+        ).start()
 
-    # ------------------------------------------------------------------ #
-    # Optional: GPT streaming
-    # ------------------------------------------------------------------ #
     def get_answer(self, transcript: str):
         """Background thread for streaming GPT output."""
         loop = asyncio.new_event_loop()
@@ -194,11 +176,8 @@ class MainWindow(QWidget):
 
         async def stream():
             async for chunk in self.api.stream_answer(transcript):
-                def _append():
-                    current = self.answer_box.toPlainText()
-                    self.answer_box.setPlainText(current + chunk)
-
-                QTimer.singleShot(0, _append)
+                current = self.answer_box.toPlainText()
+                self.answer_box.setPlainText(current + chunk)
 
         loop.run_until_complete(stream())
         loop.close()
