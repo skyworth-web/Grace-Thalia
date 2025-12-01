@@ -7,6 +7,7 @@ import logging
 import time
 import requests
 import io
+import numpy as np
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
@@ -192,19 +193,20 @@ class MicStream:
                 try:
                     mic_data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
                     
-                    # Read speaker data only if stream exists
+                    # Read speaker data and mix with mic audio
                     if self.speaker_stream is not None:
                         try:
                             speaker_data = self.speaker_stream.read(CHUNK, exception_on_overflow=False)
-                            # TODO: Mix mic + speaker audio if needed
+                            # Mix mic + speaker audio (50/50 mix)
+                            mixed_audio = self._mix_audio(mic_data, speaker_data)
                         except Exception as e:
                             logging.warning(f"⚠️ Error reading speaker stream: {e}")
-                            speaker_data = None
+                            mixed_audio = mic_data
                     else:
-                        speaker_data = None
+                        mixed_audio = mic_data
                     
-                    # Add to sliding window buffer
-                    self.audio_buffer.extend(mic_data)
+                    # Add mixed audio to sliding window buffer
+                    self.audio_buffer.extend(mixed_audio)
 
                     # Send overlapping chunks at regular intervals (like Windows Live Caption)
                     current_time = time.time()
@@ -335,6 +337,34 @@ class MicStream:
         finally:
             # Always decrement pending requests counter
             self.pending_requests = max(0, self.pending_requests - 1)
+
+    # ---------------- Audio Processing ----------------
+
+    def _mix_audio(self, mic_data: bytes, speaker_data: bytes) -> bytes:
+        """Mix microphone and speaker audio streams."""
+        try:
+            # Convert bytes to numpy arrays
+            mic_array = np.frombuffer(mic_data, dtype=np.int16)
+            speaker_array = np.frombuffer(speaker_data, dtype=np.int16)
+            
+            # Ensure same length (should be same, but safety check)
+            min_len = min(len(mic_array), len(speaker_array))
+            if min_len < len(mic_array) or min_len < len(speaker_array):
+                mic_array = mic_array[:min_len]
+                speaker_array = speaker_array[:min_len]
+            
+            # Mix audio: average of both signals (can be adjusted)
+            # Using 50/50 mix, but you can weight them differently
+            mixed = (mic_array.astype(np.int32) + speaker_array.astype(np.int32)) // 2
+            
+            # Clip to prevent overflow
+            mixed = np.clip(mixed, -32768, 32767).astype(np.int16)
+            
+            # Convert back to bytes
+            return mixed.tobytes()
+        except Exception as e:
+            logging.warning(f"⚠️ Error mixing audio: {e}, using mic only")
+            return mic_data
 
     # ---------------- Utility ----------------
 

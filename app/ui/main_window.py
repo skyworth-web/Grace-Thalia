@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QTextEdit, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal, QTimer
+from PyQt6.QtCore import pyqtSignal, QTimer, QMetaObject, Qt
 import threading
 from services.api_client import APIClient
 from audio.mic_stream import MicStream
@@ -52,8 +52,17 @@ class MainWindow(QWidget):
         """Thread-safe: add transcript to queue for GUI thread processing."""
         if text and text.strip():
             self.transcript_queue.put(text.strip())
-            if not self.transcript_timer.isActive():
-                self.transcript_timer.start()
+            # Use QMetaObject to safely start timer from any thread
+            QMetaObject.invokeMethod(
+                self,
+                "_start_timer_safe",
+                Qt.ConnectionType.QueuedConnection
+            )
+    
+    def _start_timer_safe(self):
+        """Start timer safely from GUI thread."""
+        if not self.transcript_timer.isActive():
+            self.transcript_timer.start()
     
     def _process_transcript_queue(self):
         """Process queued transcripts on GUI thread."""
