@@ -28,11 +28,8 @@ class MainWindow(QWidget):
         self.api = APIClient()
         self.caption_window = CaptionWindow()
 
-        # Connect signal to handler
-        self.transcript_received.connect(self.handle_transcript)
-
-        # MicStream callback - PyQt signals are thread-safe, so we can emit directly
-        # But to be extra safe, we'll use a simple queue with timer
+        # Use a thread-safe queue for transcript updates
+        # Process directly in timer callback (GUI thread) - no signals to avoid thread issues
         from queue import Queue
         self.transcript_queue = Queue()
         self.transcript_timer = QTimer()
@@ -65,14 +62,25 @@ class MainWindow(QWidget):
         try:
             # Process all available transcripts
             processed_count = 0
+            texts_to_process = []
+            
+            # Collect all texts first
             while True:
                 try:
                     text = self.transcript_queue.get_nowait()
-                    logging.info(f"📤 Emitting transcript signal: {text[:50]}...")
-                    self.transcript_received.emit(text)
-                    processed_count += 1
+                    texts_to_process.append(text)
                 except:
                     break
+            
+            # Process them all - this ensures we're on GUI thread
+            for text in texts_to_process:
+                try:
+                    logging.info(f"📤 Processing transcript: {text[:50]}...")
+                    # Directly update caption window (we're on GUI thread)
+                    self.caption_window.update_caption(text)
+                    processed_count += 1
+                except Exception as e:
+                    logging.error(f"❌ Error processing transcript '{text[:50]}...': {e}", exc_info=True)
             
             logging.debug(f"✅ Processed {processed_count} transcripts from queue")
             
@@ -214,18 +222,6 @@ class MainWindow(QWidget):
 
     # --------- Called in the GUI thread via signal ---------
 
-    def handle_transcript(self, text: str):
-        """Receive real-time transcript (on GUI thread)."""
-        logging.info(f"🎯 handle_transcript received: {text!r}")
-        try:
-            if not self.caption_window.isVisible():
-                logging.warning("⚠️ Caption window not visible, showing it...")
-                self.caption_window.show()
-            
-            self.caption_window.update_caption(text)
-            logging.info(f"✅ Caption window updated with: {text[:50]}...")
-        except Exception as e:
-            logging.error(f"❌ Error updating caption window: {e}", exc_info=True)
 
         # (optional) Start GPT answer streaming in background
         threading.Thread(

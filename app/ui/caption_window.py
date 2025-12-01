@@ -145,18 +145,18 @@ class CaptionWindow(QWidget):
         display_words = all_words[-60:] if len(all_words) > 60 else all_words
         display_text = " ".join(display_words)
         
-        # Update the display immediately
+        # Update the display immediately (must be called from GUI thread)
         logging.info(f"📺 Setting caption text ({len(display_words)} words): {display_text[:100]}...")
-        self.caption_text_edit.setPlainText(display_text)
         
-        # Force update/repaint
-        self.caption_text_edit.repaint()
-        self.repaint()
+        # Use setPlainText which is thread-safe when called from GUI thread
+        self.caption_text_edit.setPlainText(display_text)
 
         # Auto-scroll to end for real-time feel
         cursor = self.caption_text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.caption_text_edit.setTextCursor(cursor)
+        
+        # Update the widget (no repaint needed - Qt handles it)
         
         self.last_update_time = current_time
         logging.debug(f"✅ Caption display updated at {current_time}")
