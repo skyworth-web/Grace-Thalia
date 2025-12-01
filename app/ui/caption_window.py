@@ -1,7 +1,7 @@
 # app/ui/caption_window.py
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel
+    QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
 from PyQt6.QtGui import QTextCursor, QMouseEvent
@@ -178,8 +178,8 @@ class CaptionWindow(QWidget):
         )
         # Auto-resize based on content
         self.answer_text_edit.setSizePolicy(
-            self.answer_text_edit.sizePolicy().horizontalPolicy(),
-            self.answer_text_edit.sizePolicy().Preferred
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred
         )
         main_layout.addWidget(self.answer_text_edit)
 
