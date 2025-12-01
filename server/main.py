@@ -153,18 +153,36 @@ async def generate_stream(payload: dict):
         )
 
     try:
-        result = generator_chain.invoke({"transcript": transcript})
-        answer = result.get("answer") or result.get("text") or ""
-
         async def streamer():
-            words = answer.split()
-            for i in range(0, len(words), 5):
-                chunk = " ".join(words[i:i+5]) + " "
-                yield chunk
-                await asyncio.sleep(0.05)
+            try:
+                logger.info(f"🔄 Generating streaming answer for: {transcript[:100]}...")
+                # Invoke the chain to get the answer
+                result = generator_chain.invoke({"transcript": transcript})
+                answer = result.get("answer") or result.get("text") or ""
+                
+                if not answer:
+                    yield "⚠️ No answer generated."
+                    return
+                
+                logger.info(f"✅ Generated answer ({len(answer)} chars), streaming...")
+                
+                # Stream word by word for smooth, natural effect
+                words = answer.split()
+                for i, word in enumerate(words):
+                    # Add space after word (except last word gets period/newline handling)
+                    if i < len(words) - 1:
+                        yield word + " "
+                    else:
+                        yield word
+                    await asyncio.sleep(0.02)  # Small delay for natural streaming feel
+                    
+            except Exception as e:
+                logger.error(f"Streaming error: {e}", exc_info=True)
+                yield f"❌ Error: {str(e)}"
 
         return StreamingResponse(streamer(), media_type="text/plain")
     except Exception as e:
+        logger.error(f"/generate-stream error: {e}", exc_info=True)
         return StreamingResponse(
             iter([f"❌ Error: {str(e)}"]),
             media_type="text/plain"
