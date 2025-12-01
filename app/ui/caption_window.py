@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
-from PyQt6.QtGui import QTextCursor, QMouseEvent, QPoint
+from PyQt6.QtGui import QTextCursor, QMouseEvent
 from services.api_client import APIClient
 import logging
 import asyncio
