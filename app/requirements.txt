@@ -7,3 +7,5 @@ python-docx
 PyPDF2
 sentence-transformers
 keyboard
+pyaudio
+requests

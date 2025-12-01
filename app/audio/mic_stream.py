@@ -7,8 +7,17 @@ import logging
 import time
 import requests
 import io
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
-from pycaw.pycaw import AudioUtilities
+# pycaw is Windows-only, make it optional
+try:
+    from pycaw.pycaw import AudioUtilities
+    PYCAW_AVAILABLE = True
+except ImportError:
+    PYCAW_AVAILABLE = False
+    logging.warning("pycaw not available (Windows-only). Audio status detection disabled.")
 
 # Parameters for recording
 FORMAT = pyaudio.paInt16
@@ -39,9 +48,23 @@ class MicStream:
         self.mic_stream = None
         self.speaker_stream = None
 
-        # Buffer for building STT segments (~2 seconds)
-        self.segment_buffer = bytearray()
-        self.segment_duration_target = 2.0  # seconds
+        # Real-time streaming parameters - smaller chunks with overlap
+        self.chunk_duration = 0.8  # seconds per chunk (smaller for lower latency)
+        self.overlap_duration = 0.4  # seconds of overlap (50% overlap)
+        self.bytes_per_frame = 2 * CHANNELS  # 16-bit = 2 bytes * channels
+        self.frames_per_chunk = int(self.chunk_duration * RATE)
+        self.bytes_per_chunk = self.frames_per_chunk * self.bytes_per_frame
+        self.overlap_bytes = int(self.overlap_duration * RATE * self.bytes_per_frame)
+        
+        # Sliding window buffer for overlapping chunks
+        self.audio_buffer = deque(maxlen=int(3 * RATE * self.bytes_per_frame))  # Keep ~3 seconds max
+        
+        # Thread pool for concurrent STT processing
+        self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="STT")
+        self.stt_queue = Queue()
+        
+        # Track last processed position to avoid duplicate processing
+        self.last_processed_pos = 0
 
     # ---------------- Recording control ----------------
 
@@ -90,6 +113,9 @@ class MicStream:
         self.running = False
 
         try:
+            # Wait for pending STT requests to complete (with timeout)
+            self.executor.shutdown(wait=True, timeout=5)
+            
             if self.mic_stream is not None:
                 self.mic_stream.stop_stream()
                 self.mic_stream.close()
@@ -104,6 +130,9 @@ class MicStream:
                 self.p.terminate()
                 self.p = None
 
+            # Clear buffers
+            self.audio_buffer.clear()
+            
             logging.info("Recording stopped")
         except Exception as e:
             logging.error(f"Error while stopping recording: {e}")
@@ -111,32 +140,40 @@ class MicStream:
     # ---------------- Internal loops ----------------
 
     def _capture_loop(self):
-        """Continuously capture audio from mic + speaker and send segments to STT."""
+        """Continuously capture audio from mic + speaker and send overlapping segments to STT."""
         try:
-            bytes_per_frame = 2 * CHANNELS  # 16-bit = 2 bytes * channels
-            frames_per_segment = int(self.segment_duration_target * RATE)
-            bytes_per_segment = frames_per_segment * bytes_per_frame
-
+            chunk_interval = self.chunk_duration - self.overlap_duration  # Time between chunk starts
+            last_chunk_time = time.time()
+            
             while self.running:
                 mic_data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
                 speaker_data = self.speaker_stream.read(CHUNK, exception_on_overflow=False)
 
-                # Mix mic + speaker by simple interleaving (or just use mic_data if you want)
-                # For now we just use mic_data for clarity:
-                self.segment_buffer.extend(mic_data)
+                # Mix mic + speaker audio (simple average for now)
+                # Convert to numpy arrays for mixing if needed, or just use mic_data
+                # For now, use mic_data for clarity, but you can mix them:
+                # mixed = self._mix_audio(mic_data, speaker_data)
+                
+                # Add to sliding window buffer
+                self.audio_buffer.extend(mic_data)
 
-                # If buffer has enough for ~2 seconds, send it
-                if len(self.segment_buffer) >= bytes_per_segment:
-                    segment = bytes(self.segment_buffer[:bytes_per_segment])
-                    del self.segment_buffer[:bytes_per_segment]
+                # Send overlapping chunks at regular intervals (like Windows Live Caption)
+                current_time = time.time()
+                if current_time - last_chunk_time >= chunk_interval:
+                    if len(self.audio_buffer) >= self.bytes_per_chunk:
+                        # Extract chunk with overlap from buffer
+                        chunk_data = bytes(list(self.audio_buffer)[-self.bytes_per_chunk:])
+                        
+                        # Submit to thread pool for async processing
+                        self.executor.submit(self._send_segment_to_backend, chunk_data)
+                        
+                        last_chunk_time = current_time
+                        logging.debug(
+                            f"🎤 Queued {len(chunk_data)} bytes for STT "
+                            f"(~{self.chunk_duration:.1f}s chunk)"
+                        )
 
-                    logging.info(
-                        f"🎤 Prepared {len(segment)} bytes for STT "
-                        f"(~{self.segment_duration_target:.1f}s)"
-                    )
-                    self._send_segment_to_backend(segment)
-
-                time.sleep(0.01)  # tiny sleep to avoid maxing CPU
+                time.sleep(0.001)  # Very small sleep for real-time responsiveness
 
         except Exception as e:
             logging.error(f"❌ Error during recording: {e}")
@@ -153,50 +190,72 @@ class MicStream:
     # ---------------- STT ----------------
 
     def _send_segment_to_backend(self, audio_bytes: bytes):
-        """Build WAV from raw PCM bytes and POST to /stt."""
-        try:
-            with io.BytesIO() as wav_buffer:
-                with wave.open(wav_buffer, "wb") as wf:
-                    wf.setnchannels(CHANNELS)
-                    wf.setsampwidth(self.p.get_sample_size(FORMAT))
-                    wf.setframerate(RATE)
-                    wf.writeframes(audio_bytes)
+        """Build WAV from raw PCM bytes and POST to /stt with retry logic."""
+        max_retries = 2
+        retry_delay = 0.1
+        
+        for attempt in range(max_retries):
+            try:
+                with io.BytesIO() as wav_buffer:
+                    with wave.open(wav_buffer, "wb") as wf:
+                        wf.setnchannels(CHANNELS)
+                        wf.setsampwidth(self.p.get_sample_size(FORMAT))
+                        wf.setframerate(RATE)
+                        wf.writeframes(audio_bytes)
 
-                wav_data = wav_buffer.getvalue()
+                    wav_data = wav_buffer.getvalue()
 
-            logging.info(f"🎤 Sending audio to backend with {len(wav_data)} bytes")
+                logging.debug(f"🎤 Sending audio to backend ({len(wav_data)} bytes, attempt {attempt + 1})")
 
-            response = requests.post(
-                self.stt_url,
-                files={"file": ("audio.wav", wav_data, "audio/wav")},
-                timeout=30,
-            )
-
-            if response.status_code != 200:
-                logging.error(
-                    f"❌ STT failed with status {response.status_code}: {response.text}"
+                response = requests.post(
+                    self.stt_url,
+                    files={"file": ("audio.wav", wav_data, "audio/wav")},
+                    timeout=10,  # Shorter timeout for real-time
                 )
+
+                if response.status_code != 200:
+                    logging.warning(
+                        f"⚠️ STT failed with status {response.status_code}: {response.text}"
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                    return
+
+                json_data = response.json()
+                text = json_data.get("transcript", "").strip()
+
+                if text:
+                    logging.info(f"📝 Transcript: {text}")
+                    # IMPORTANT: this callback will be a Qt signal emitter,
+                    # so calling it from this thread is SAFE.
+                    try:
+                        self.callback(text)
+                    except Exception as cb_err:
+                        logging.error(f"❌ Error in callback: {cb_err}")
+                else:
+                    logging.debug("Empty transcript received")
+                
+                return  # Success, exit retry loop
+
+            except requests.exceptions.Timeout:
+                logging.warning(f"⚠️ STT timeout (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            except Exception as e:
+                logging.error(f"❌ STT error: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
                 return
-
-            json_data = response.json()
-            text = json_data.get("transcript", "").strip()
-
-            if text:
-                logging.info(f"📝 Transcript: {text}")
-                # IMPORTANT: this callback will be a Qt signal emitter,
-                # so calling it from this thread is SAFE.
-                try:
-                    self.callback(text)
-                except Exception as cb_err:
-                    logging.error(f"❌ Error in callback: {cb_err}")
-
-        except Exception as e:
-            logging.error(f"❌ STT error: {e}")
 
     # ---------------- Utility ----------------
 
     def is_audio_playing(self):
-        """Check if any audio session is active via PyCaw."""
+        """Check if any audio session is active via PyCaw (Windows only)."""
+        if not PYCAW_AVAILABLE:
+            return False
         try:
             sessions = AudioUtilities.GetAllSessions()
             for session in sessions:
