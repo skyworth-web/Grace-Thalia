@@ -168,14 +168,44 @@ class CaptionWindow(QWidget):
         self.answer_label.setText("")
 
     def generate_answer(self):
-        transcript = self.caption_text_edit.toPlainText().strip()
+        # Use full_transcript instead of displayed text to get complete transcript
+        transcript = self.full_transcript.strip() if self.full_transcript else self.caption_text_edit.toPlainText().strip()
+        
         if not transcript:
-            self.answer_label.setText("⚠️ No text to generate an answer.")
+            self.answer_label.setText("⚠️ No text to generate an answer. Please start live captions first.")
+            logging.warning("⚠️ Generate button clicked but no transcript available")
             return
 
+        logging.info(f"🔄 Generating answer for transcript: {transcript[:100]}...")
+        self.answer_label.setText("⏳ Generating answer... Please wait...")
+        
         try:
             response = self.api.generate(transcript)
-            answer = response.get("answer", "⚠️ No answer received.")
-            self.answer_label.setText(answer)
+            logging.info(f"📥 Generate response: {response}")
+            
+            # Check response status
+            if response.get("status") == "error":
+                error_msg = response.get("message", "Unknown error")
+                self.answer_label.setText(f"⚠️ Error: {error_msg}")
+                logging.error(f"❌ Generate error: {error_msg}")
+            elif response.get("status") == "ok":
+                answer = response.get("answer", "")
+                if answer:
+                    self.answer_label.setText(answer)
+                    logging.info(f"✅ Answer generated successfully: {answer[:100]}...")
+                else:
+                    self.answer_label.setText("⚠️ No answer received from server.")
+                    logging.warning("⚠️ Generate returned ok status but no answer field")
+            else:
+                # Try to get answer directly (backward compatibility)
+                answer = response.get("answer", response.get("text", ""))
+                if answer:
+                    self.answer_label.setText(answer)
+                    logging.info(f"✅ Answer received: {answer[:100]}...")
+                else:
+                    self.answer_label.setText(f"⚠️ Unexpected response format: {response}")
+                    logging.error(f"❌ Unexpected response format: {response}")
         except Exception as e:
-            self.answer_label.setText(f"⚠️ Error: {str(e)}")
+            error_msg = f"⚠️ Error: {str(e)}"
+            self.answer_label.setText(error_msg)
+            logging.error(f"❌ Exception in generate_answer: {e}", exc_info=True)
