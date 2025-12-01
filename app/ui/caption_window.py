@@ -3,8 +3,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QTextCursor
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize
+from PyQt6.QtGui import QTextCursor, QMouseEvent, QPoint
 from services.api_client import APIClient
 import logging
 import asyncio
@@ -18,14 +18,17 @@ class CaptionWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Live Captions")
-        self.setGeometry(100, 100, 800, 200)
+        self.setGeometry(100, 100, 1000, 700)
 
-        # Always on top, frameless
+        # Always on top, frameless, draggable
         self.setWindowFlags(
             Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        # Drag functionality
+        self.drag_position = None
 
         self.api = APIClient()
         self.caption_history = []
@@ -44,54 +47,164 @@ class CaptionWindow(QWidget):
         # Chat history for context-aware answers
         self.chat_history = []  # List of {"question": str, "answer": str}
 
-        layout = QVBoxLayout()
+        # Main container with rounded corners and shadow
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
 
-        # Status label
+        # Header bar (for dragging and status)
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(10, 8, 10, 8)
+        
         self.status_label = QLabel("🔴 Waiting for audio...")
-        self.status_label.setStyleSheet("font-size: 12px; color: #ffaa00; padding: 4px;")
-        layout.addWidget(self.status_label)
+        self.status_label.setStyleSheet("""
+            font-size: 12px; 
+            color: #ffaa00; 
+            font-weight: bold;
+            background: transparent;
+        """)
+        header_layout.addWidget(self.status_label)
+        
+        header_layout.addStretch()
+        
+        # Control buttons in header
+        self.clear_button = QPushButton("🗑️ Clear")
+        self.clear_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(255, 68, 68, 150);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 68, 68, 200);
+            }
+            QPushButton:pressed {
+                background-color: rgba(255, 68, 68, 255);
+            }
+        """)
+        self.clear_button.clicked.connect(self.clear_text)
+        header_layout.addWidget(self.clear_button)
 
-        # Caption area
+        self.generate_button = QPushButton("✨ Generate Answer")
+        self.generate_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 255, 149, 150);
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 255, 149, 200);
+            }
+            QPushButton:pressed {
+                background-color: rgba(0, 255, 149, 255);
+            }
+        """)
+        self.generate_button.clicked.connect(self.generate_answer)
+        header_layout.addWidget(self.generate_button)
+
+        main_layout.addLayout(header_layout)
+
+        # Question/Caption area
+        question_label = QLabel("📝 Question (Live Caption):")
+        question_label.setStyleSheet("""
+            font-size: 13px; 
+            color: #00ff95; 
+            font-weight: bold;
+            background: transparent;
+            margin-bottom: 5px;
+        """)
+        main_layout.addWidget(question_label)
+
         self.caption_text_edit = QTextEdit()
         self.caption_text_edit.setReadOnly(True)
-        self.caption_text_edit.setStyleSheet(
-            """
+        self.caption_text_edit.setStyleSheet("""
             QTextEdit {
                 font-size: 20px;
                 color: #00ff95;
-                background-color: rgba(0, 0, 0, 200);
-                border-radius: 8px;
-                padding: 8px;
+                background-color: rgba(0, 0, 0, 220);
+                border: 2px solid rgba(0, 255, 149, 100);
+                border-radius: 10px;
+                padding: 15px;
+                min-height: 150px;
+                max-height: 300px;
             }
-            """
-        )
+        """)
         self.caption_text_edit.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
         )
-        layout.addWidget(self.caption_text_edit)
+        self.caption_text_edit.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        main_layout.addWidget(self.caption_text_edit)
 
-        # Answer area (for GPT answer)
-        self.answer_label = QLabel("")
-        self.answer_label.setStyleSheet("font-size: 16px; color: #ffffff;")
-        self.answer_label.setWordWrap(True)
-        layout.addWidget(self.answer_label)
+        # Answer area
+        answer_label = QLabel("💬 AI Answer:")
+        answer_label.setStyleSheet("""
+            font-size: 13px; 
+            color: #4da6ff; 
+            font-weight: bold;
+            background: transparent;
+            margin-top: 10px;
+            margin-bottom: 5px;
+        """)
+        main_layout.addWidget(answer_label)
 
-        # Buttons
-        button_layout = QHBoxLayout()
-        self.clear_button = QPushButton("Clear")
-        self.clear_button.clicked.connect(self.clear_text)
+        self.answer_text_edit = QTextEdit()
+        self.answer_text_edit.setReadOnly(True)
+        self.answer_text_edit.setStyleSheet("""
+            QTextEdit {
+                font-size: 20px;
+                color: #4da6ff;
+                background-color: rgba(0, 0, 0, 220);
+                border: 2px solid rgba(77, 166, 255, 100);
+                border-radius: 10px;
+                padding: 15px;
+                min-height: 100px;
+            }
+        """)
+        self.answer_text_edit.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.answer_text_edit.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        # Auto-resize based on content
+        self.answer_text_edit.setSizePolicy(
+            self.answer_text_edit.sizePolicy().horizontalPolicy(),
+            self.answer_text_edit.sizePolicy().Preferred
+        )
+        main_layout.addWidget(self.answer_text_edit)
 
-        self.generate_button = QPushButton("Generate")
-        self.generate_button.clicked.connect(self.generate_answer)
+        # Add stretch to push content to top
+        main_layout.addStretch()
 
-        button_layout.addWidget(self.clear_button)
-        button_layout.addWidget(self.generate_button)
-        layout.addLayout(button_layout)
+        # Set main layout with background
+        container = QWidget()
+        container.setLayout(main_layout)
+        container.setStyleSheet("""
+            QWidget {
+                background-color: rgba(20, 20, 30, 240);
+                border-radius: 15px;
+                border: 2px solid rgba(255, 255, 255, 30);
+            }
+        """)
 
-        self.setLayout(layout)
+        final_layout = QVBoxLayout()
+        final_layout.setContentsMargins(0, 0, 0, 0)
+        final_layout.addWidget(container)
+        self.setLayout(final_layout)
         
         # Show initial message
         self.caption_text_edit.setPlainText("Waiting for audio... Speak into your microphone.")
+        self.answer_text_edit.setPlainText("AI answers will appear here...")
 
     def set_recording_status(self, is_recording: bool):
         """Update status label based on recording state."""
@@ -190,11 +303,25 @@ class CaptionWindow(QWidget):
         self.last_update_time = current_time
         logging.debug(f"✅ Caption display updated at {current_time}")
 
+    def mousePressEvent(self, event: QMouseEvent):
+        """Handle mouse press for window dragging."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Get global position and window position
+            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        """Handle mouse move for window dragging."""
+        if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position:
+            # Move window to new position
+            self.move(event.globalPos() - self.drag_position)
+            event.accept()
+
     def clear_text(self):
         self.caption_history = []
         self.full_transcript = ""
         self.caption_text_edit.clear()
-        self.answer_label.setText("")
+        self.answer_text_edit.setPlainText("AI answers will appear here...")
         self.chat_history = []  # Clear chat history when clearing captions
         logging.info("🧹 Cleared chat history")
 
@@ -203,7 +330,7 @@ class CaptionWindow(QWidget):
         transcript = self.full_transcript.strip() if self.full_transcript else self.caption_text_edit.toPlainText().strip()
         
         if not transcript:
-            self.answer_label.setText("⚠️ No text to generate an answer. Please start live captions first.")
+            self.answer_text_edit.setPlainText("⚠️ No text to generate an answer. Please start live captions first.")
             logging.warning("⚠️ Generate button clicked but no transcript available")
             return
 
@@ -214,7 +341,7 @@ class CaptionWindow(QWidget):
 
         logging.info(f"🔄 Starting streaming answer for transcript: {transcript[:100]}...")
         logging.info(f"📜 Using chat history: {len(self.chat_history)} previous exchanges")
-        self.answer_label.setText("⏳ Generating answer...")
+        self.answer_text_edit.setPlainText("⏳ Generating answer... Please wait...")
         self.is_streaming = True
         
         # Clear previous answer chunks
@@ -290,7 +417,19 @@ class CaptionWindow(QWidget):
                     
                     # Append chunk to current answer
                     self.current_answer += chunk
-                    self.answer_label.setText(self.current_answer)
+                    self.answer_text_edit.setPlainText(self.current_answer)
+                    
+                    # Auto-resize answer area based on content
+                    doc = self.answer_text_edit.document()
+                    doc.setTextWidth(self.answer_text_edit.viewport().width())
+                    height = int(doc.size().height()) + 30  # Add padding
+                    self.answer_text_edit.setMinimumHeight(min(height, 400))  # Max 400px
+                    
+                    # Auto-scroll to end
+                    cursor = self.answer_text_edit.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    self.answer_text_edit.setTextCursor(cursor)
+                    
                     logging.debug(f"📺 Updated answer display ({len(self.current_answer)} chars)")
                     
                 except:
