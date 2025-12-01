@@ -150,10 +150,18 @@ class MainWindow(QWidget):
 
     def start_captions(self):
         self.caption_window.show()
-        self.streamer.start_recording()
+        self.caption_window.set_recording_status(True)
+        try:
+            self.streamer.start_recording()
+            logging.info("✅ Recording started successfully")
+        except Exception as e:
+            logging.error(f"❌ Failed to start recording: {e}")
+            self.caption_window.set_recording_status(False)
+            self.caption_window.caption_text_edit.setPlainText(f"❌ Error starting recording: {e}\n\nPlease check:\n1. Microphone is connected\n2. Correct audio device is selected\n3. Server is running at http://localhost:8000")
 
     def stop_captions(self):
         self.streamer.stop_recording()
+        self.caption_window.set_recording_status(False)
 
     # --------- Called in the GUI thread via signal ---------
 

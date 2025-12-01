@@ -31,6 +31,11 @@ class CaptionWindow(QWidget):
 
         layout = QVBoxLayout()
 
+        # Status label
+        self.status_label = QLabel("🔴 Waiting for audio...")
+        self.status_label.setStyleSheet("font-size: 12px; color: #ffaa00; padding: 4px;")
+        layout.addWidget(self.status_label)
+
         # Caption area
         self.caption_text_edit = QTextEdit()
         self.caption_text_edit.setReadOnly(True)
@@ -69,16 +74,33 @@ class CaptionWindow(QWidget):
         layout.addLayout(button_layout)
 
         self.setLayout(layout)
+        
+        # Show initial message
+        self.caption_text_edit.setPlainText("Waiting for audio... Speak into your microphone.")
+
+    def set_recording_status(self, is_recording: bool):
+        """Update status label based on recording state."""
+        if is_recording:
+            self.status_label.setText("🟢 Recording... Listening for audio...")
+            self.status_label.setStyleSheet("font-size: 12px; color: #00ff95; padding: 4px;")
+        else:
+            self.status_label.setText("🔴 Recording stopped")
+            self.status_label.setStyleSheet("font-size: 12px; color: #ff4444; padding: 4px;")
 
     def update_caption(self, text: str):
         """Append new transcript chunk to the live caption view with smart merging."""
-        logging.info(f"CaptionWindow.update_caption: {text!r}")
+        logging.info(f"CaptionWindow.update_caption called with: {text!r}")
 
         if not text or not text.strip():
+            logging.warning("⚠️ Empty text received in update_caption")
             return
 
         import time
         current_time = time.time()
+        
+        # Update status to show we're receiving updates
+        self.status_label.setText("🟢 Live captions active - receiving audio...")
+        self.status_label.setStyleSheet("font-size: 12px; color: #00ff95; padding: 4px;")
         
         # Add new text to full transcript
         new_text = text.strip()

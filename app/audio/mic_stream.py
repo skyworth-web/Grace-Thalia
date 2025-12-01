@@ -71,6 +71,7 @@ class MicStream:
     def start_recording(self):
         """Start recording from microphone and speaker."""
         if self.running:
+            logging.warning("Recording already started")
             return
 
         # Decide which device index to use for mic
@@ -78,32 +79,66 @@ class MicStream:
 
         self.running = True
 
-        # Mic stream
-        self.mic_stream = self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
-            input_device_index=mic_index,
-            frames_per_buffer=CHUNK,
-        )
+        try:
+            # Mic stream
+            logging.info(f"Opening mic stream with device index {mic_index}")
+            try:
+                self.mic_stream = self.p.open(
+                    format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    input=True,
+                    input_device_index=mic_index,
+                    frames_per_buffer=CHUNK,
+                )
+                logging.info(f"✅ Mic stream opened successfully with device {mic_index}")
+            except Exception as e:
+                # Fallback to default device (None) if specified device fails
+                if mic_index is not None:
+                    logging.warning(f"⚠️ Failed to open device {mic_index}: {e}. Trying default device...")
+                    try:
+                        self.mic_stream = self.p.open(
+                            format=FORMAT,
+                            channels=CHANNELS,
+                            rate=RATE,
+                            input=True,
+                            input_device_index=None,  # Use default device
+                            frames_per_buffer=CHUNK,
+                        )
+                        logging.info("✅ Mic stream opened successfully with default device")
+                    except Exception as e2:
+                        logging.error(f"❌ Failed to open default device: {e2}")
+                        self.running = False
+                        raise
+                else:
+                    raise
+        except Exception as e:
+            logging.error(f"❌ Failed to open mic stream: {e}")
+            self.running = False
+            raise
 
-        # Speaker / VB-Cable stream
-        self.speaker_stream = self.p.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            input=True,
-            input_device_index=SPEAKER_DEVICE_INDEX,
-            frames_per_buffer=CHUNK,
-        )
+        # Speaker / VB-Cable stream (optional - may not exist on all systems)
+        try:
+            logging.info(f"Attempting to open speaker stream with device index {SPEAKER_DEVICE_INDEX}")
+            self.speaker_stream = self.p.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                input_device_index=SPEAKER_DEVICE_INDEX,
+                frames_per_buffer=CHUNK,
+            )
+            logging.info("✅ Speaker stream opened successfully")
+        except Exception as e:
+            logging.warning(f"⚠️ Speaker stream not available (device {SPEAKER_DEVICE_INDEX}): {e}. Continuing with mic only.")
+            self.speaker_stream = None
 
-        logging.info("Recording...")
-        logging.info("Live captions started")
+        logging.info("🎤 Recording started - Live captions active")
 
         # Start threads
         self.recording_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self.recording_thread.start()
+        logging.info("✅ Recording thread started")
 
         self.logging_thread = threading.Thread(target=self._log_audio_status, daemon=True)
         self.logging_thread.start()
@@ -144,39 +179,62 @@ class MicStream:
         try:
             chunk_interval = self.chunk_duration - self.overlap_duration  # Time between chunk starts
             last_chunk_time = time.time()
+            chunk_count = 0
+            
+            logging.info(f"🎤 Capture loop started (chunk interval: {chunk_interval:.2f}s)")
             
             while self.running:
-                mic_data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
-                speaker_data = self.speaker_stream.read(CHUNK, exception_on_overflow=False)
+                try:
+                    mic_data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
+                    
+                    # Read speaker data only if stream exists
+                    if self.speaker_stream is not None:
+                        try:
+                            speaker_data = self.speaker_stream.read(CHUNK, exception_on_overflow=False)
+                            # TODO: Mix mic + speaker audio if needed
+                        except Exception as e:
+                            logging.warning(f"⚠️ Error reading speaker stream: {e}")
+                            speaker_data = None
+                    else:
+                        speaker_data = None
+                    
+                    # Add to sliding window buffer
+                    self.audio_buffer.extend(mic_data)
 
-                # Mix mic + speaker audio (simple average for now)
-                # Convert to numpy arrays for mixing if needed, or just use mic_data
-                # For now, use mic_data for clarity, but you can mix them:
-                # mixed = self._mix_audio(mic_data, speaker_data)
-                
-                # Add to sliding window buffer
-                self.audio_buffer.extend(mic_data)
+                    # Send overlapping chunks at regular intervals (like Windows Live Caption)
+                    current_time = time.time()
+                    if current_time - last_chunk_time >= chunk_interval:
+                        buffer_size = len(self.audio_buffer)
+                        if buffer_size >= self.bytes_per_chunk:
+                            # Extract chunk with overlap from buffer
+                            chunk_data = bytes(list(self.audio_buffer)[-self.bytes_per_chunk:])
+                            
+                            # Submit to thread pool for async processing
+                            self.executor.submit(self._send_segment_to_backend, chunk_data)
+                            
+                            chunk_count += 1
+                            last_chunk_time = current_time
+                            logging.info(
+                                f"🎤 Queued chunk #{chunk_count}: {len(chunk_data)} bytes for STT "
+                                f"(buffer: {buffer_size} bytes, ~{self.chunk_duration:.1f}s audio)"
+                            )
+                        else:
+                            logging.warning(
+                                f"⚠️ Buffer not ready: {buffer_size}/{self.bytes_per_chunk} bytes "
+                                f"(need {self.bytes_per_chunk - buffer_size} more)"
+                            )
 
-                # Send overlapping chunks at regular intervals (like Windows Live Caption)
-                current_time = time.time()
-                if current_time - last_chunk_time >= chunk_interval:
-                    if len(self.audio_buffer) >= self.bytes_per_chunk:
-                        # Extract chunk with overlap from buffer
-                        chunk_data = bytes(list(self.audio_buffer)[-self.bytes_per_chunk:])
-                        
-                        # Submit to thread pool for async processing
-                        self.executor.submit(self._send_segment_to_backend, chunk_data)
-                        
-                        last_chunk_time = current_time
-                        logging.debug(
-                            f"🎤 Queued {len(chunk_data)} bytes for STT "
-                            f"(~{self.chunk_duration:.1f}s chunk)"
-                        )
-
-                time.sleep(0.001)  # Very small sleep for real-time responsiveness
+                    time.sleep(0.001)  # Very small sleep for real-time responsiveness
+                    
+                except Exception as e:
+                    logging.error(f"❌ Error reading audio in capture loop: {e}")
+                    if not self.running:
+                        break
+                    time.sleep(0.1)  # Brief pause before retrying
 
         except Exception as e:
-            logging.error(f"❌ Error during recording: {e}")
+            logging.error(f"❌ Fatal error in capture loop: {e}", exc_info=True)
+            self.running = False
 
     def _log_audio_status(self):
         """Periodically log whether any system audio is playing."""
@@ -205,7 +263,7 @@ class MicStream:
 
                     wav_data = wav_buffer.getvalue()
 
-                logging.debug(f"🎤 Sending audio to backend ({len(wav_data)} bytes, attempt {attempt + 1})")
+                logging.info(f"🎤 Sending audio to backend ({len(wav_data)} bytes, attempt {attempt + 1})")
 
                 response = requests.post(
                     self.stt_url,
@@ -224,17 +282,23 @@ class MicStream:
 
                 json_data = response.json()
                 text = json_data.get("transcript", "").strip()
+                error_msg = json_data.get("error", "")
+
+                if error_msg:
+                    logging.error(f"❌ STT error from backend: {error_msg}")
+                    return
 
                 if text:
-                    logging.info(f"📝 Transcript: {text}")
+                    logging.info(f"📝 Transcript received: {text}")
                     # IMPORTANT: this callback will be a Qt signal emitter,
                     # so calling it from this thread is SAFE.
                     try:
                         self.callback(text)
+                        logging.info(f"✅ Callback executed successfully")
                     except Exception as cb_err:
-                        logging.error(f"❌ Error in callback: {cb_err}")
+                        logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
                 else:
-                    logging.debug("Empty transcript received")
+                    logging.info("⚠️ Empty transcript received from STT (no speech detected)")
                 
                 return  # Success, exit retry loop
 
@@ -243,8 +307,11 @@ class MicStream:
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
+            except requests.exceptions.ConnectionError as e:
+                logging.error(f"❌ STT connection error: {e}. Is the server running at {self.stt_url}?")
+                return  # Don't retry connection errors
             except Exception as e:
-                logging.error(f"❌ STT error: {e}")
+                logging.error(f"❌ STT error: {e}", exc_info=True)
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
