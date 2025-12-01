@@ -3,10 +3,13 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QTextCursor
 from services.api_client import APIClient
 import logging
+import asyncio
+import threading
+from queue import Queue
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,6 +31,14 @@ class CaptionWindow(QWidget):
         self.caption_history = []
         self.full_transcript = ""  # Accumulated full transcript
         self.last_update_time = 0
+        
+        # For streaming answers
+        self.answer_queue = Queue()
+        self.answer_timer = QTimer()
+        self.answer_timer.timeout.connect(self._process_answer_queue)
+        self.answer_timer.setInterval(50)  # Update every 50ms for smooth streaming
+        self.is_streaming = False
+        self.current_answer = ""
 
         layout = QVBoxLayout()
 
@@ -176,36 +187,90 @@ class CaptionWindow(QWidget):
             logging.warning("⚠️ Generate button clicked but no transcript available")
             return
 
-        logging.info(f"🔄 Generating answer for transcript: {transcript[:100]}...")
-        self.answer_label.setText("⏳ Generating answer... Please wait...")
+        # Don't start new stream if one is already running
+        if self.is_streaming:
+            logging.warning("⚠️ Stream already in progress, ignoring request")
+            return
+
+        logging.info(f"🔄 Starting streaming answer for transcript: {transcript[:100]}...")
+        self.answer_label.setText("⏳ Generating answer...")
+        self.is_streaming = True
+        
+        # Clear previous answer chunks
+        self.answer_queue = Queue()
+        self.current_answer = ""
+        
+        # Start streaming in background thread
+        threading.Thread(
+            target=self._stream_answer_background,
+            args=(transcript,),
+            daemon=True
+        ).start()
+        
+        # Start timer to process answer chunks
+        if not self.answer_timer.isActive():
+            self.answer_timer.start()
+    
+    def _stream_answer_background(self, transcript: str):
+        """Background thread for streaming answer from API."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         
         try:
-            response = self.api.generate(transcript)
-            logging.info(f"📥 Generate response: {response}")
+            async def stream():
+                try:
+                    async for chunk in self.api.stream_answer(transcript):
+                        if chunk:
+                            self.answer_queue.put(chunk)
+                            logging.debug(f"📥 Received chunk: {chunk[:50]}...")
+                except Exception as e:
+                    error_msg = f"❌ Streaming error: {str(e)}"
+                    logging.error(error_msg, exc_info=True)
+                    self.answer_queue.put(error_msg)
+                finally:
+                    # Signal end of stream
+                    self.answer_queue.put(None)  # None signals end of stream
             
-            # Check response status
-            if response.get("status") == "error":
-                error_msg = response.get("message", "Unknown error")
-                self.answer_label.setText(f"⚠️ Error: {error_msg}")
-                logging.error(f"❌ Generate error: {error_msg}")
-            elif response.get("status") == "ok":
-                answer = response.get("answer", "")
-                if answer:
-                    self.answer_label.setText(answer)
-                    logging.info(f"✅ Answer generated successfully: {answer[:100]}...")
-                else:
-                    self.answer_label.setText("⚠️ No answer received from server.")
-                    logging.warning("⚠️ Generate returned ok status but no answer field")
-            else:
-                # Try to get answer directly (backward compatibility)
-                answer = response.get("answer", response.get("text", ""))
-                if answer:
-                    self.answer_label.setText(answer)
-                    logging.info(f"✅ Answer received: {answer[:100]}...")
-                else:
-                    self.answer_label.setText(f"⚠️ Unexpected response format: {response}")
-                    logging.error(f"❌ Unexpected response format: {response}")
+            loop.run_until_complete(stream())
         except Exception as e:
-            error_msg = f"⚠️ Error: {str(e)}"
-            self.answer_label.setText(error_msg)
-            logging.error(f"❌ Exception in generate_answer: {e}", exc_info=True)
+            error_msg = f"❌ Error in stream thread: {str(e)}"
+            logging.error(error_msg, exc_info=True)
+            self.answer_queue.put(error_msg)
+            self.answer_queue.put(None)
+        finally:
+            loop.close()
+    
+    def _process_answer_queue(self):
+        """Process answer chunks from queue and update GUI (runs on GUI thread)."""
+        try:
+            # Process all available chunks
+            while True:
+                try:
+                    chunk = self.answer_queue.get_nowait()
+                    
+                    if chunk is None:
+                        # End of stream
+                        self.is_streaming = False
+                        self.answer_timer.stop()
+                        logging.info("✅ Answer streaming completed")
+                        break
+                    
+                    # Append chunk to current answer
+                    self.current_answer += chunk
+                    self.answer_label.setText(self.current_answer)
+                    logging.debug(f"📺 Updated answer display ({len(self.current_answer)} chars)")
+                    
+                except:
+                    break
+            
+            # Keep timer running if still streaming
+            if self.is_streaming and not self.answer_queue.empty():
+                if not self.answer_timer.isActive():
+                    self.answer_timer.start()
+            elif not self.is_streaming:
+                self.answer_timer.stop()
+                
+        except Exception as e:
+            logging.error(f"❌ Error processing answer queue: {e}", exc_info=True)
+            self.is_streaming = False
+            self.answer_timer.stop()
