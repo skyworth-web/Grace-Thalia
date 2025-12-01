@@ -182,23 +182,54 @@ async def health():
     }
 
 # ---------------------------
-# STT - speech to text
+# STT - speech to text (optimized for streaming)
 # ---------------------------
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
+# Thread pool for STT processing to prevent blocking
+stt_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="STT")
+
 @app.post("/stt")
 async def stt(file: UploadFile = File(...)):
     if client is None:
         return {"transcript": "", "error": "OpenAI client not initialized. Set OPENAI_API_KEY."}
     try:
         audio_bytes = await file.read()
-        logger.info(f"🎤 STT received file {file.filename} ({file.content_type})")
-        result = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=(file.filename, audio_bytes, file.content_type)
+        logger.debug(f"🎤 STT received file {file.filename} ({len(audio_bytes)} bytes)")
+        
+        # Run STT in thread pool to prevent blocking
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            stt_executor,
+            _transcribe_audio,
+            client,
+            audio_bytes,
+            file.filename,
+            file.content_type
         )
-        return {"transcript": result.text or ""}
+        
+        if result:
+            logger.info(f"📝 STT transcript: {result[:50]}...")
+        else:
+            logger.debug("⚠️ Empty transcript from STT")
+        
+        return {"transcript": result or ""}
     except Exception as e:
-        logger.error(f"STT error: {e}")
+        logger.error(f"STT error: {e}", exc_info=True)
         return {"transcript": "", "error": str(e)}
+
+def _transcribe_audio(client_instance, audio_bytes: bytes, filename: str, content_type: str):
+    """Synchronous transcription function for thread pool."""
+    try:
+        result = client_instance.audio.transcriptions.create(
+            model="whisper-1",
+            file=(filename, audio_bytes, content_type)
+        )
+        return result.text if hasattr(result, 'text') else str(result) if result else ""
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        return ""
 
 # ---------------------------
 # Audio input stream

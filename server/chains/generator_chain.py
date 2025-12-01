@@ -16,22 +16,25 @@ def build_generator_chain():
     prompt = PromptTemplate(
         input_variables=["transcript"],
         template="""
-You are an expert interview answer assistant.
+You are an expert interview answer assistant helping a candidate respond to interview questions in real-time.
 
-Below is what the interviewer said:
+The interviewer just said: "{transcript}"
 
-"{transcript}"
+Generate a smart, concise answer (2-4 sentences) that:
+• Directly addresses the question or topic
+• Sounds natural and conversational (not robotic)
+• Highlights relevant skills/experience from the candidate's background
+• Shows confidence and professionalism
+• Avoids repeating the question back
+• Is ready to speak - use natural spoken language
 
-Write a strong, polished interview response in 3–5 sentences that:
+IMPORTANT: 
+- Keep it brief and punchy (2-4 sentences max)
+- Make it sound like a real person speaking, not a written essay
+- Focus on the key point, don't over-explain
+- If the transcript is unclear or incomplete, provide a general professional response
 
-• directly answers the implied question  
-• sounds confident, natural, and conversational  
-• focuses on relevant professional skills, experience, or achievements  
-• avoids repeating the transcript verbatim  
-• frames the candidate in a positive, capable light  
-• uses simple and clear English
-
-Provide only the candidate’s answer.
+Provide ONLY the candidate's spoken answer, nothing else.
 """,
     )
 

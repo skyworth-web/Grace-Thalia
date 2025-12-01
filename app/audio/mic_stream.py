@@ -59,12 +59,17 @@ class MicStream:
         # Sliding window buffer for overlapping chunks
         self.audio_buffer = deque(maxlen=int(3 * RATE * self.bytes_per_frame))  # Keep ~3 seconds max
         
-        # Thread pool for concurrent STT processing
-        self.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="STT")
+        # Thread pool for concurrent STT processing (reduced to prevent overload)
+        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="STT")
         self.stt_queue = Queue()
+        
+        # Request throttling - track last request time
+        self.last_request_time = 0
+        self.min_request_interval = 0.5  # Minimum 0.5 seconds between requests
         
         # Track last processed position to avoid duplicate processing
         self.last_processed_pos = 0
+        self.pending_requests = 0  # Track number of pending requests
 
     # ---------------- Recording control ----------------
 
@@ -206,20 +211,30 @@ class MicStream:
                     if current_time - last_chunk_time >= chunk_interval:
                         buffer_size = len(self.audio_buffer)
                         if buffer_size >= self.bytes_per_chunk:
-                            # Extract chunk with overlap from buffer
-                            chunk_data = bytes(list(self.audio_buffer)[-self.bytes_per_chunk:])
-                            
-                            # Submit to thread pool for async processing
-                            self.executor.submit(self._send_segment_to_backend, chunk_data)
-                            
-                            chunk_count += 1
-                            last_chunk_time = current_time
-                            logging.info(
-                                f"🎤 Queued chunk #{chunk_count}: {len(chunk_data)} bytes for STT "
-                                f"(buffer: {buffer_size} bytes, ~{self.chunk_duration:.1f}s audio)"
-                            )
+                            # Throttle requests to prevent backend overload
+                            time_since_last = current_time - self.last_request_time
+                            if time_since_last >= self.min_request_interval and self.pending_requests < 2:
+                                # Extract chunk with overlap from buffer
+                                chunk_data = bytes(list(self.audio_buffer)[-self.bytes_per_chunk:])
+                                
+                                # Submit to thread pool for async processing
+                                self.pending_requests += 1
+                                self.executor.submit(self._send_segment_to_backend, chunk_data)
+                                
+                                chunk_count += 1
+                                last_chunk_time = current_time
+                                self.last_request_time = current_time
+                                logging.info(
+                                    f"🎤 Queued chunk #{chunk_count}: {len(chunk_data)} bytes for STT "
+                                    f"(buffer: {buffer_size} bytes, pending: {self.pending_requests})"
+                                )
+                            else:
+                                logging.debug(
+                                    f"⏸️ Request throttled (interval: {time_since_last:.2f}s, "
+                                    f"pending: {self.pending_requests})"
+                                )
                         else:
-                            logging.warning(
+                            logging.debug(
                                 f"⚠️ Buffer not ready: {buffer_size}/{self.bytes_per_chunk} bytes "
                                 f"(need {self.bytes_per_chunk - buffer_size} more)"
                             )
@@ -249,10 +264,11 @@ class MicStream:
 
     def _send_segment_to_backend(self, audio_bytes: bytes):
         """Build WAV from raw PCM bytes and POST to /stt with retry logic."""
-        max_retries = 2
+        max_retries = 1  # Reduced retries to prevent backlog
         retry_delay = 0.1
         
-        for attempt in range(max_retries):
+        try:
+            for attempt in range(max_retries):
             try:
                 with io.BytesIO() as wav_buffer:
                     with wave.open(wav_buffer, "wb") as wf:
@@ -294,13 +310,16 @@ class MicStream:
                     # so calling it from this thread is SAFE.
                     try:
                         self.callback(text)
-                        logging.info(f"✅ Callback executed successfully")
+                        logging.debug(f"✅ Callback executed successfully")
                     except Exception as cb_err:
                         logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
                 else:
-                    logging.info("⚠️ Empty transcript received from STT (no speech detected)")
+                    logging.debug("⚠️ Empty transcript received from STT (no speech detected)")
                 
                 return  # Success, exit retry loop
+        finally:
+            # Always decrement pending requests counter
+            self.pending_requests = max(0, self.pending_requests - 1)
 
             except requests.exceptions.Timeout:
                 logging.warning(f"⚠️ STT timeout (attempt {attempt + 1}/{max_retries})")

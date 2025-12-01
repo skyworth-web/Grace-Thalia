@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QTextEdit, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QTimer
+import threading
 from services.api_client import APIClient
 from audio.mic_stream import MicStream
 from ui.caption_window import CaptionWindow
@@ -30,11 +31,43 @@ class MainWindow(QWidget):
         # Connect signal to handler
         self.transcript_received.connect(self.handle_transcript)
 
-        # MicStream callback will be the SIGNAL EMITTER, not handle_transcript directly
+        # Use a thread-safe queue for transcript updates
+        from queue import Queue
+        self.transcript_queue = Queue()
+        self.transcript_timer = QTimer()
+        self.transcript_timer.timeout.connect(self._process_transcript_queue)
+        self.transcript_timer.setSingleShot(False)
+        self.transcript_timer.setInterval(50)  # Process every 50ms
+
+        # MicStream callback - add to queue for thread-safe processing
         self.streamer = MicStream(
             stt_url="http://localhost:8000/stt",
-            callback=self.transcript_received.emit
+            callback=self._queue_transcript
         )
+    
+    def _queue_transcript(self, text: str):
+        """Thread-safe: add transcript to queue for GUI thread processing."""
+        if text and text.strip():
+            self.transcript_queue.put(text.strip())
+            if not self.transcript_timer.isActive():
+                self.transcript_timer.start()
+    
+    def _process_transcript_queue(self):
+        """Process queued transcripts on GUI thread."""
+        try:
+            # Process all available transcripts
+            while True:
+                try:
+                    text = self.transcript_queue.get_nowait()
+                    self.transcript_received.emit(text)
+                except:
+                    break
+        except:
+            pass
+        
+        # Stop timer if queue is empty
+        if self.transcript_queue.empty():
+            self.transcript_timer.stop()
 
         self.init_ui()
 
