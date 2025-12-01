@@ -194,7 +194,7 @@ def build_chain():
 
     llm = ChatOpenAI(
         model="gpt-4o",
-        temperature=0.9,
+        temperature=0.2,
         streaming=False,
     )
 
