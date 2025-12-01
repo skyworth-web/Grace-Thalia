@@ -101,7 +101,7 @@ def ingest_docs() -> None:
 
 
 def _extract_resume_summary(resume_text: str) -> str:
-    """Extract key information from resume using LLM."""
+    """Extract comprehensive information from resume using LLM."""
     try:
         from langchain_openai import ChatOpenAI
         from langchain_core.prompts import PromptTemplate
@@ -112,38 +112,70 @@ def _extract_resume_summary(resume_text: str) -> str:
             logger.warning("⚠️ OPENAI_API_KEY not set, skipping resume summary extraction")
             return ""
         
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, timeout=10)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, timeout=30)
         
+        # Use a more comprehensive prompt that extracts ALL important information
         prompt = PromptTemplate(
             input_variables=["resume"],
-            template="""Extract key information from this resume. Provide a concise summary in this exact format:
-
-NAME: [Full name if available, otherwise "Not specified"]
-TITLE/ROLE: [Current or most recent job title]
-YEARS_OF_EXPERIENCE: [Total years of professional experience, estimate if not explicit]
-KEY_SKILLS: [Top 5-7 most important skills/technologies, comma-separated]
-EDUCATION: [Highest degree and field]
-KEY_ACHIEVEMENTS: [2-3 most impressive achievements or projects, one per line]
+            template="""You are an expert at analyzing resumes. Extract ALL key information from this resume in a comprehensive, structured format.
 
 Resume text:
 {resume}
 
-Provide ONLY the summary in the format above, nothing else. If information is not available, write "Not specified"."""
+Extract and provide the following information in this EXACT format:
+
+=== PERSONAL INFORMATION ===
+NAME: [Full name]
+EMAIL: [Email address if available]
+LOCATION: [City, State/Country if available]
+
+=== PROFESSIONAL SUMMARY ===
+CURRENT_TITLE: [Current or most recent job title]
+YEARS_OF_EXPERIENCE: [Total years of professional experience - calculate from all roles]
+INDUSTRY: [Primary industry or field]
+
+=== KEY SKILLS & TECHNOLOGIES ===
+[List ALL technical skills, programming languages, tools, frameworks, and technologies mentioned. Be comprehensive - include everything from the resume.]
+
+=== WORK EXPERIENCE ===
+[For each role, provide:
+- Company: [Company name]
+- Title: [Job title]
+- Duration: [Start date - End date or "Present"]
+- Key Responsibilities: [Main responsibilities and achievements]
+- Technologies Used: [Technologies/skills used in this role]
+]
+
+=== EDUCATION ===
+[Degree: [Degree name]
+Institution: [University/College name]
+Field: [Field of study]
+Year: [Graduation year if available]
+]
+
+=== PROJECTS & ACHIEVEMENTS ===
+[List all significant projects, achievements, awards, or notable accomplishments mentioned in the resume]
+
+=== CERTIFICATIONS ===
+[Any certifications, licenses, or professional qualifications]
+
+Provide ALL information found in the resume. Be thorough and comprehensive. If information is not available, write "Not specified" for that field."""
         )
         
         chain = prompt | llm
-        # Limit to first 4000 chars to avoid token limits
-        limited_resume = resume_text[:4000] if len(resume_text) > 4000 else resume_text
+        # Use more of the resume (up to 8000 chars) for better extraction
+        limited_resume = resume_text[:8000] if len(resume_text) > 8000 else resume_text
+        logger.info(f"📋 Extracting resume summary from {len(limited_resume)} characters...")
         summary = chain.invoke({"resume": limited_resume})
         result = summary.content if hasattr(summary, 'content') else str(summary)
-        logger.info(f"✅ Extracted resume summary: {result[:100]}...")
+        logger.info(f"✅ Extracted comprehensive resume summary ({len(result)} chars)")
         return result
     except Exception as e:
-        logger.warning(f"⚠️ Could not extract resume summary: {e}")
+        logger.warning(f"⚠️ Could not extract resume summary: {e}", exc_info=True)
         # Fallback: try to extract basic info from first lines
-        lines = [line.strip() for line in resume_text.split('\n')[:15] if line.strip()]
+        lines = [line.strip() for line in resume_text.split('\n')[:20] if line.strip()]
         fallback = "\n".join(lines)
-        logger.info(f"📋 Using fallback summary (first 15 lines)")
+        logger.info(f"📋 Using fallback summary (first 20 lines)")
         return fallback
 
 

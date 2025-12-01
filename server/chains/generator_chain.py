@@ -36,15 +36,61 @@ def build_generator_chain():
         embedding_function=embeddings,
     )
     
+    # Store chroma instance for use in retrieve_with_summary
+    _chroma_instance = chroma
+    
     # Retrieve more context for better answers
-    retriever = chroma.as_retriever(search_kwargs={"k": 8})  # Get more chunks for comprehensive context
+    retriever = chroma.as_retriever(
+        search_kwargs={"k": 10},  # Get more chunks for comprehensive context
+    )
+    
+    # Helper to ensure summary is always included
+    def retrieve_with_summary(question):
+        """Retrieve documents and always include summary if available."""
+        # Get regular retrieval results
+        retrieved_docs = retriever.invoke(question)
+        
+        # Try to get summary document if not already in results
+        try:
+            # Check if summary is already in retrieved_docs
+            summary_in_results = any(
+                doc.metadata.get("type") == "summary" for doc in retrieved_docs
+            )
+            
+            if not summary_in_results:
+                # Try to find summary document using a general query
+                summary_results = _chroma_instance.similarity_search(
+                    "resume summary profile name skills experience background",
+                    k=1
+                )
+                
+                # Check if any result is a summary
+                for doc in summary_results:
+                    if doc.metadata.get("type") == "summary":
+                        retrieved_docs.insert(0, doc)  # Add summary at the beginning
+                        logger.debug("✅ Added summary document to retrieval results")
+                        break
+        except Exception as e:
+            logger.debug(f"Could not fetch summary separately: {e}")
+        
+        return retrieved_docs
 
     prompt = PromptTemplate(
         input_variables=["context", "transcript", "chat_history"],
         template="""You are an expert interview answer assistant helping a candidate respond to interview questions in real-time.
 
-CANDIDATE'S BACKGROUND (from resume and job description):
+CANDIDATE'S COMPLETE BACKGROUND (from resume profile and job description):
 {context}
+
+IMPORTANT: The context above includes a comprehensive RESUME PROFILE section that contains ALL key information:
+- Name, title, years of experience
+- ALL skills and technologies
+- Complete work experience with responsibilities
+- Education details
+- Projects and achievements
+- Certifications
+
+Use this information extensively and accurately.
 
 Previous conversation:
 {chat_history}
@@ -53,31 +99,41 @@ The interviewer just asked: "{transcript}"
 
 SPECIAL HANDLING FOR "TELL ME ABOUT YOURSELF":
 - If the question is "tell me about yourself", "introduce yourself", "walk me through your background", or similar:
-  * ALWAYS start with "My name is [NAME]" if name is available in the resume summary
-  * Mention current role/title: "I am a [TITLE]" or "I'm currently a [TITLE]"
-  * Include years of experience: "with [X] years of experience" or "I have [X] years of experience"
-  * Highlight 2-3 most relevant skills/technologies from the resume
-  * Mention 1-2 key achievements or projects that align with the job
+  * ALWAYS start with "My name is [NAME]" - get the name from the RESUME PROFILE section
+  * Mention current role/title: "I am a [TITLE]" or "I'm currently a [TITLE]" - use the CURRENT_TITLE from profile
+  * Include years of experience: "with [X] years of experience" - use YEARS_OF_EXPERIENCE from profile
+  * Highlight 3-5 most relevant skills/technologies from the KEY SKILLS section
+  * Mention 1-2 key achievements or projects from WORK EXPERIENCE or PROJECTS sections
   * End with why you're interested in this role (if job description provided)
   * Keep it to 4-6 sentences, natural and conversational
-  * Example structure: "My name is [Name] and I'm a [Title] with [X] years of experience in [key areas]. I specialize in [top skills] and have successfully [key achievement]. I'm particularly excited about this opportunity because [connection to job]."
+  * Example: "My name is [Name from profile] and I'm a [Title from profile] with [X] years of experience. I specialize in [skills from profile] and have [achievement from profile]. I'm particularly excited about this opportunity because [connection to job]."
+
+- For questions about skills/technologies:
+  * Reference the EXACT skills listed in the KEY SKILLS & TECHNOLOGIES section
+  * Mention specific projects or roles where you used those skills from WORK EXPERIENCE
+  * Be specific and accurate
+
+- For questions about experience/projects:
+  * Use details from the WORK EXPERIENCE section
+  * Reference specific companies, roles, and achievements
+  * Mention technologies used from each role
+  * Use information from PROJECTS & ACHIEVEMENTS section
 
 - For other questions:
-  * Use SPECIFIC details from the candidate's resume
-  * Reference actual projects, roles, or achievements
-  * Connect experience to the question
+  * ALWAYS use SPECIFIC details from the resume profile
+  * Reference actual projects, roles, companies, or achievements from the context
+  * Connect experience to the question using real information
   * Keep it concise (2-4 sentences)
 
-GENERAL RULES:
-• Directly addresses the question using SPECIFIC details from the candidate's resume
-• Highlights relevant skills, experiences, or achievements from their background
-• Aligns with the job requirements (if job description was provided)
-• Sounds natural and conversational (not robotic or generic)
-• Shows confidence and professionalism
-• Uses concrete examples from their experience when relevant
-• Avoids repeating the question back
-• Is ready to speak - use natural spoken language
-• NEVER make up experiences not in the resume - only use what's provided
+CRITICAL RULES:
+• ALWAYS use information from the RESUME PROFILE section - it contains comprehensive details
+• Use SPECIFIC names, companies, technologies, and achievements from the profile
+• NEVER make up or guess information - only use what's explicitly in the context
+• If information is not in the context, say you don't have that information rather than making it up
+• Reference the exact skills, technologies, and experiences listed in the profile
+• Sound natural and conversational, not robotic
+• Show confidence and professionalism
+• Avoid repeating the question back
 
 Provide ONLY the candidate's spoken answer, nothing else.
 """,
@@ -85,20 +141,28 @@ Provide ONLY the candidate's spoken answer, nothing else.
 
     # Helper function to format retrieved documents
     def format_context(docs):
-        """Format retrieved documents into context string."""
+        """Format retrieved documents into context string with summary prioritized."""
         if not docs:
             return "No resume or job description information available."
         context_parts = []
-        summary_found = False
+        summary_doc = None
         
-        # Prioritize summary if available
+        # Find and prioritize summary document
         for doc in docs:
             if doc.metadata.get("type") == "summary":
-                context_parts.insert(0, doc.page_content)  # Put summary first
-                summary_found = True
+                summary_doc = doc
                 break
         
-        # Add other documents
+        # Always include summary first if available
+        if summary_doc:
+            context_parts.append("=" * 60)
+            context_parts.append("RESUME PROFILE (Complete Background):")
+            context_parts.append("=" * 60)
+            context_parts.append(summary_doc.page_content)
+            context_parts.append("=" * 60)
+            context_parts.append("\nDETAILED RESUME SECTIONS:\n")
+        
+        # Add other documents (resume chunks and job description)
         for doc in docs:
             if doc.metadata.get("type") != "summary":
                 source = doc.metadata.get("source", "unknown")
@@ -106,7 +170,9 @@ Provide ONLY the candidate's spoken answer, nothing else.
                 if content:
                     context_parts.append(f"[{source}]: {content}")
         
-        return "\n\n".join(context_parts) if context_parts else "No relevant information found."
+        result = "\n\n".join(context_parts) if context_parts else "No relevant information found."
+        logger.debug(f"📄 Formatted context ({len(result)} chars) from {len(docs)} documents")
+        return result
     
     # Helper to format chat history
     def format_chat_history(history):
@@ -138,7 +204,7 @@ Provide ONLY the candidate's spoken answer, nothing else.
     base_chain = (
         RunnableMap(
             {
-                "context": itemgetter("transcript") | retriever | RunnableLambda(format_context),
+                "context": itemgetter("transcript") | RunnableLambda(retrieve_with_summary) | RunnableLambda(format_context),
                 "transcript": itemgetter("transcript"),
                 "chat_history": RunnableLambda(get_chat_history_safe) | RunnableLambda(format_chat_history),
             }
