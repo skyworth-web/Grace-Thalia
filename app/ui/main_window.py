@@ -40,23 +40,25 @@ class MainWindow(QWidget):
         self.transcript_timer.setSingleShot(False)
         self.transcript_timer.setInterval(20)  # Process every 20ms for real-time feel
 
-        # MicStream callback - add to queue for thread-safe processing
+        # MicStream callback - PyQt signals are thread-safe, emit directly
+        # But we'll use queue for batching multiple transcripts
         self.streamer = MicStream(
             stt_url="http://localhost:8000/stt",
-            callback=self._queue_transcript
+            callback=self._on_transcript_received
         )
         
         # Initialize UI
         self.init_ui()
     
-    def _queue_transcript(self, text: str):
-        """Thread-safe: add transcript to queue for GUI thread processing."""
+    def _on_transcript_received(self, text: str):
+        """Called from worker thread when transcript is received."""
         if text and text.strip():
+            # Add to queue
             self.transcript_queue.put(text.strip())
-            # Start timer if not already running
-            # Using singleShot is safe from any thread
+            logging.info(f"📥 Queued transcript: {text[:50]}...")
+            # Start timer to process queue (safe to call from any thread via singleShot)
             if not self.transcript_timer.isActive():
-                QTimer.singleShot(0, lambda: self.transcript_timer.start())
+                QTimer.singleShot(0, self.transcript_timer.start)
     
     def _process_transcript_queue(self):
         """Process queued transcripts on GUI thread."""
@@ -66,16 +68,23 @@ class MainWindow(QWidget):
             while True:
                 try:
                     text = self.transcript_queue.get_nowait()
+                    logging.info(f"📤 Emitting transcript signal: {text[:50]}...")
                     self.transcript_received.emit(text)
                     processed_count += 1
                 except:
                     break
             
+            logging.debug(f"✅ Processed {processed_count} transcripts from queue")
+            
             # Keep timer running if there's more in queue
             if self.transcript_queue.empty():
                 self.transcript_timer.stop()
+            else:
+                # More items, keep timer running
+                if not self.transcript_timer.isActive():
+                    self.transcript_timer.start()
         except Exception as e:
-            logging.error(f"Error processing transcript queue: {e}")
+            logging.error(f"❌ Error processing transcript queue: {e}", exc_info=True)
             self.transcript_timer.stop()
 
     def init_ui(self):
@@ -207,8 +216,16 @@ class MainWindow(QWidget):
 
     def handle_transcript(self, text: str):
         """Receive real-time transcript (on GUI thread)."""
-        logging.info(f"handle_transcript got text: {text!r}")
-        self.caption_window.update_caption(text)
+        logging.info(f"🎯 handle_transcript received: {text!r}")
+        try:
+            if not self.caption_window.isVisible():
+                logging.warning("⚠️ Caption window not visible, showing it...")
+                self.caption_window.show()
+            
+            self.caption_window.update_caption(text)
+            logging.info(f"✅ Caption window updated with: {text[:50]}...")
+        except Exception as e:
+            logging.error(f"❌ Error updating caption window: {e}", exc_info=True)
 
         # (optional) Start GPT answer streaming in background
         threading.Thread(

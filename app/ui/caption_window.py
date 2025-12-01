@@ -89,7 +89,10 @@ class CaptionWindow(QWidget):
 
     def update_caption(self, text: str):
         """Append new transcript chunk to the live caption view with smart merging (Windows Live Caption style)."""
+        logging.info(f"📝 CaptionWindow.update_caption called with: {text!r}")
+        
         if not text or not text.strip():
+            logging.warning("⚠️ Empty text in update_caption")
             return
 
         import time
@@ -143,7 +146,12 @@ class CaptionWindow(QWidget):
         display_text = " ".join(display_words)
         
         # Update the display immediately
+        logging.info(f"📺 Setting caption text ({len(display_words)} words): {display_text[:100]}...")
         self.caption_text_edit.setPlainText(display_text)
+        
+        # Force update/repaint
+        self.caption_text_edit.repaint()
+        self.repaint()
 
         # Auto-scroll to end for real-time feel
         cursor = self.caption_text_edit.textCursor()
@@ -151,6 +159,7 @@ class CaptionWindow(QWidget):
         self.caption_text_edit.setTextCursor(cursor)
         
         self.last_update_time = current_time
+        logging.debug(f"✅ Caption display updated at {current_time}")
 
     def clear_text(self):
         self.caption_history = []
