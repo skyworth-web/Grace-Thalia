@@ -307,14 +307,14 @@ class CaptionWindow(QWidget):
         """Handle mouse press for window dragging."""
         if event.button() == Qt.MouseButton.LeftButton:
             # Get global position and window position
-            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent):
         """Handle mouse move for window dragging."""
         if event.buttons() == Qt.MouseButton.LeftButton and self.drag_position:
             # Move window to new position
-            self.move(event.globalPos() - self.drag_position)
+            self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
 
     def clear_text(self):

@@ -25,8 +25,8 @@ def build_generator_chain():
         return _build_simple_chain()
     
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.5,
+        model="gpt-4o",
+        temperature=0.6,
         streaming=True,  # Enable streaming
     )
 
@@ -223,8 +223,8 @@ def _build_simple_chain():
     """Fallback chain without retrieval (if resume not uploaded)."""
     logger.warning("⚠️ Building generator chain without resume context")
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.4,
+        model="gpt-4o",
+        temperature=0.6,
         streaming=True,
     )
 

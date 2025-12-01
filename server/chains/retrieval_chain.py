@@ -112,7 +112,7 @@ def _extract_resume_summary(resume_text: str) -> str:
             logger.warning("⚠️ OPENAI_API_KEY not set, skipping resume summary extraction")
             return ""
         
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, timeout=30)
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.1, timeout=30)
         
         # Use a more comprehensive prompt that extracts ALL important information
         prompt = PromptTemplate(
@@ -193,8 +193,8 @@ def build_chain():
         raise ValueError("Vector store missing — run /ingest first")
 
     llm = ChatOpenAI(
-        model="gpt-4o-mini",
-        temperature=0.6,
+        model="gpt-4o",
+        temperature=0.9,
         streaming=False,
     )
 
