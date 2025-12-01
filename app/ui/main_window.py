@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QPushButton, QComboBox,
     QTextEdit, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal, QTimer, QMetaObject, Qt
+from PyQt6.QtCore import pyqtSignal, QTimer, pyqtSlot
 import threading
 from services.api_client import APIClient
 from audio.mic_stream import MicStream
@@ -31,13 +31,14 @@ class MainWindow(QWidget):
         # Connect signal to handler
         self.transcript_received.connect(self.handle_transcript)
 
-        # Use a thread-safe queue for transcript updates
+        # MicStream callback - PyQt signals are thread-safe, so we can emit directly
+        # But to be extra safe, we'll use a simple queue with timer
         from queue import Queue
         self.transcript_queue = Queue()
         self.transcript_timer = QTimer()
         self.transcript_timer.timeout.connect(self._process_transcript_queue)
         self.transcript_timer.setSingleShot(False)
-        self.transcript_timer.setInterval(50)  # Process every 50ms
+        self.transcript_timer.setInterval(20)  # Process every 20ms for real-time feel
 
         # MicStream callback - add to queue for thread-safe processing
         self.streamer = MicStream(
@@ -52,33 +53,29 @@ class MainWindow(QWidget):
         """Thread-safe: add transcript to queue for GUI thread processing."""
         if text and text.strip():
             self.transcript_queue.put(text.strip())
-            # Use QMetaObject to safely start timer from any thread
-            QMetaObject.invokeMethod(
-                self,
-                "_start_timer_safe",
-                Qt.ConnectionType.QueuedConnection
-            )
-    
-    def _start_timer_safe(self):
-        """Start timer safely from GUI thread."""
-        if not self.transcript_timer.isActive():
-            self.transcript_timer.start()
+            # Start timer if not already running
+            # Using singleShot is safe from any thread
+            if not self.transcript_timer.isActive():
+                QTimer.singleShot(0, lambda: self.transcript_timer.start())
     
     def _process_transcript_queue(self):
         """Process queued transcripts on GUI thread."""
         try:
             # Process all available transcripts
+            processed_count = 0
             while True:
                 try:
                     text = self.transcript_queue.get_nowait()
                     self.transcript_received.emit(text)
+                    processed_count += 1
                 except:
                     break
-        except:
-            pass
-        
-        # Stop timer if queue is empty
-        if self.transcript_queue.empty():
+            
+            # Keep timer running if there's more in queue
+            if self.transcript_queue.empty():
+                self.transcript_timer.stop()
+        except Exception as e:
+            logging.error(f"Error processing transcript queue: {e}")
             self.transcript_timer.stop()
 
     def init_ui(self):

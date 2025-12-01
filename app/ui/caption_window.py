@@ -88,11 +88,8 @@ class CaptionWindow(QWidget):
             self.status_label.setStyleSheet("font-size: 12px; color: #ff4444; padding: 4px;")
 
     def update_caption(self, text: str):
-        """Append new transcript chunk to the live caption view with smart merging."""
-        logging.info(f"CaptionWindow.update_caption called with: {text!r}")
-
+        """Append new transcript chunk to the live caption view with smart merging (Windows Live Caption style)."""
         if not text or not text.strip():
-            logging.warning("⚠️ Empty text received in update_caption")
             return
 
         import time
@@ -105,46 +102,50 @@ class CaptionWindow(QWidget):
         # Add new text to full transcript
         new_text = text.strip()
         
-        # Smart merging: avoid duplicates by checking if new text overlaps with recent text
-        # This handles overlapping chunks from the audio stream (Windows Live Caption style)
+        # Windows Live Caption style: simple append with basic deduplication
         if self.full_transcript:
-            # Get recent words for comparison (last 15 words to catch overlaps)
-            recent_text = " ".join(self.full_transcript.split()[-15:]).lower()
+            # Get last few words for overlap detection
+            last_words_list = self.full_transcript.split()[-8:]  # Last 8 words
+            last_words = " ".join(last_words_list).lower()
             new_text_lower = new_text.lower()
             
-            # Simple overlap detection: if new text starts with words we already have
-            # Find the longest prefix of new_text that appears in recent_text
+            # Check for exact duplicate
+            if new_text_lower == last_words:
+                return
+            
+            # Check if new text starts with words we already have (overlap)
+            # Find how many words overlap
             new_words = new_text.split()
-            overlap_count = 0
+            overlap_found = False
             
-            # Check if first few words of new_text match end of recent_text
-            for i in range(1, min(len(new_words) + 1, 10)):  # Check up to 10 words
-                prefix = " ".join(new_words[:i]).lower()
-                if recent_text.endswith(prefix) or prefix in recent_text:
-                    overlap_count = i
+            for i in range(min(len(new_words), len(last_words_list)), 0, -1):
+                new_prefix = " ".join(new_words[:i]).lower()
+                if last_words.endswith(new_prefix):
+                    # Found overlap, add only the new part
+                    if i < len(new_words):
+                        remaining_words = new_words[i:]
+                        self.full_transcript += " " + " ".join(remaining_words)
+                        overlap_found = True
+                    break
             
-            # Only add non-overlapping words
-            if overlap_count > 0 and overlap_count < len(new_words):
-                remaining_words = new_words[overlap_count:]
-                if remaining_words:
-                    self.full_transcript += " " + " ".join(remaining_words)
-            elif overlap_count == 0:
-                # No overlap, add the whole new text
+            # No overlap found, just append
+            if not overlap_found:
                 self.full_transcript += " " + new_text
-            # If overlap_count == len(new_words), the whole text is duplicate, skip it
         else:
             # First chunk
             self.full_transcript = new_text
 
-        # Update display with recent portion (like Windows Live Caption)
-        # Show last ~100 words for readability, but keep full transcript for context
+        # Windows Live Caption style: Show recent text (last 2-3 lines, ~50-80 words)
+        # This gives the real-time streaming feel
         all_words = self.full_transcript.split()
-        display_words = all_words[-100:] if len(all_words) > 100 else all_words
+        # Show last 60 words for better readability (like Windows Live Caption)
+        display_words = all_words[-60:] if len(all_words) > 60 else all_words
         display_text = " ".join(display_words)
         
+        # Update the display immediately
         self.caption_text_edit.setPlainText(display_text)
 
-        # Scroll to end for real-time feel
+        # Auto-scroll to end for real-time feel
         cursor = self.caption_text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.caption_text_edit.setTextCursor(cursor)
