@@ -14,6 +14,7 @@ import threading
 import sounddevice as sd
 import os
 import logging
+import time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +37,11 @@ class MainWindow(QWidget):
         self.transcript_timer.timeout.connect(self._process_transcript_queue)
         self.transcript_timer.setSingleShot(False)
         self.transcript_timer.setInterval(20)  # Process every 20ms for real-time feel
+        
+        # Filtering for false positives (STT hallucinations)
+        self.recent_transcripts = []  # Track recent transcripts to filter duplicates
+        self.last_transcript_time = {}  # Track when we last saw each transcript
+        self.filter_window = 2.0  # Ignore same transcript if seen within 2 seconds
 
         # MicStream callback - PyQt signals are thread-safe, emit directly
         # But we'll use queue for batching multiple transcripts
@@ -57,11 +63,54 @@ class MainWindow(QWidget):
             if not self.transcript_timer.isActive():
                 QTimer.singleShot(0, self.transcript_timer.start)
     
+    def _should_filter_transcript(self, text: str) -> bool:
+        """Filter out false positives and hallucinations from STT."""
+        text_lower = text.strip().lower()
+        
+        # Filter empty or very short transcripts (likely noise)
+        if len(text_lower) < 2:
+            logging.debug(f"🔇 Filtered: too short ({text_lower})")
+            return True
+        
+        # Filter common single-word hallucinations that appear during silence
+        common_hallucinations = ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm"]
+        words = text_lower.split()
+        if len(words) == 1 and words[0] in common_hallucinations:
+            # Check if we've seen this recently (within filter_window seconds)
+            current_time = time.time()
+            last_seen = self.last_transcript_time.get(text_lower, 0)
+            
+            if current_time - last_seen < self.filter_window:
+                logging.debug(f"🔇 Filtered: duplicate hallucination '{text_lower}' (seen {current_time - last_seen:.1f}s ago)")
+                return True
+            
+            # Update last seen time
+            self.last_transcript_time[text_lower] = current_time
+        
+        # Filter if same transcript appears too frequently
+        current_time = time.time()
+        if text_lower in self.last_transcript_time:
+            time_since_last = current_time - self.last_transcript_time[text_lower]
+            if time_since_last < self.filter_window:
+                logging.debug(f"🔇 Filtered: duplicate transcript '{text_lower}' (seen {time_since_last:.1f}s ago)")
+                return True
+        
+        # Update tracking
+        self.last_transcript_time[text_lower] = current_time
+        
+        # Keep recent transcripts list small (last 20)
+        if len(self.recent_transcripts) > 20:
+            self.recent_transcripts.pop(0)
+        self.recent_transcripts.append((text_lower, current_time))
+        
+        return False
+    
     def _process_transcript_queue(self):
         """Process queued transcripts on GUI thread."""
         try:
             # Process all available transcripts
             processed_count = 0
+            filtered_count = 0
             texts_to_process = []
             
             # Collect all texts first
@@ -75,6 +124,11 @@ class MainWindow(QWidget):
             # Process them all - this ensures we're on GUI thread
             for text in texts_to_process:
                 try:
+                    # Filter out false positives and hallucinations
+                    if self._should_filter_transcript(text):
+                        filtered_count += 1
+                        continue
+                    
                     logging.info(f"📤 Processing transcript: {text[:50]}...")
                     # Directly update caption window (we're on GUI thread)
                     self.caption_window.update_caption(text)
@@ -82,6 +136,8 @@ class MainWindow(QWidget):
                 except Exception as e:
                     logging.error(f"❌ Error processing transcript '{text[:50]}...': {e}", exc_info=True)
             
+            if filtered_count > 0:
+                logging.debug(f"🔇 Filtered {filtered_count} false positive transcripts")
             logging.debug(f"✅ Processed {processed_count} transcripts from queue")
             
             # Keep timer running if there's more in queue

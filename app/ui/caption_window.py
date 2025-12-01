@@ -119,17 +119,28 @@ class CaptionWindow(QWidget):
         # Windows Live Caption style: simple append with basic deduplication
         if self.full_transcript:
             # Get last few words for overlap detection
-            last_words_list = self.full_transcript.split()[-8:]  # Last 8 words
+            last_words_list = self.full_transcript.split()[-10:]  # Last 10 words
             last_words = " ".join(last_words_list).lower()
             new_text_lower = new_text.lower()
+            new_words = new_text.split()
             
-            # Check for exact duplicate
-            if new_text_lower == last_words:
+            # Aggressive filtering: If new text is a single common word and it appears in last 5 words, skip it
+            if len(new_words) == 1:
+                common_words = ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm", "the", "a", "an", "is", "are"]
+                if new_words[0].lower() in common_words:
+                    # Check if this word appears in the last 5 words
+                    recent_words = [w.lower() for w in last_words_list[-5:]]
+                    if new_words[0].lower() in recent_words:
+                        logging.debug(f"🔇 Skipping duplicate common word: {new_text}")
+                        return
+            
+            # Check for exact duplicate with last few words
+            if new_text_lower == last_words or new_text_lower in last_words:
+                logging.debug(f"🔇 Skipping exact duplicate: {new_text}")
                 return
             
             # Check if new text starts with words we already have (overlap)
             # Find how many words overlap
-            new_words = new_text.split()
             overlap_found = False
             
             for i in range(min(len(new_words), len(last_words_list)), 0, -1):
@@ -140,6 +151,9 @@ class CaptionWindow(QWidget):
                         remaining_words = new_words[i:]
                         self.full_transcript += " " + " ".join(remaining_words)
                         overlap_found = True
+                    else:
+                        # Complete overlap, skip
+                        logging.debug(f"🔇 Skipping complete overlap: {new_text}")
                     break
             
             # No overlap found, just append
