@@ -32,14 +32,24 @@ class APIClient:
             self.logger.error(f"Generate error: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def stream_answer(self, transcript):
+    async def stream_answer(self, transcript, chat_history=None):
         """Stream the answer from backend as the response is being generated"""
+        if chat_history is None:
+            chat_history = []
+        
+        payload = {
+            "transcript": transcript,
+            "chat_history": chat_history
+        }
+        
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.post(f"{BACKEND_URL}/generate-stream", json={"transcript": transcript}) as resp:
+                async with session.post(f"{BACKEND_URL}/generate-stream", json=payload) as resp:
                     resp.raise_for_status()  # Check for errors
                     async for chunk in resp.content.iter_chunked(32):
-                        yield chunk.decode()  # Decode bytes and yield the response chunk by chunk
+                        decoded = chunk.decode('utf-8', errors='ignore')
+                        if decoded:
+                            yield decoded
             except aiohttp.ClientError as e:
                 self.logger.error(f"Stream error: {e}")
                 yield f"❌ Error: {str(e)}"

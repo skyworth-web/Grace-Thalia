@@ -35,7 +35,12 @@ def ingest_docs() -> None:
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    # Smaller chunks with more overlap for better context preservation
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,  # Smaller chunks for better precision
+        chunk_overlap=300,  # More overlap to preserve context
+        separators=["\n\n", "\n", ". ", " ", ""]  # Better splitting for resumes
+    )
 
     # Create Chroma store
     chroma = Chroma(
@@ -45,15 +50,33 @@ def ingest_docs() -> None:
 
     docs = []
 
-    # Resume ingestion
+    # Resume ingestion with better metadata
     resume_path = os.path.join(DATA_DIR, "resume.txt")
+    resume_summary = None
     if os.path.exists(resume_path):
         with open(resume_path, "r", encoding="utf-8") as f:
             text = f.read()
         if text.strip():
+            # Extract key resume info for quick access
+            resume_summary = _extract_resume_summary(text)
+            
+            # Split resume into chunks with better metadata
             for d in splitter.create_documents([text]):
-                d.metadata = {"source": "resume"}
+                d.metadata = {
+                    "source": "resume",
+                    "type": "resume",
+                    "summary": resume_summary  # Include summary in metadata for easy access
+                }
                 docs.append(d)
+            
+            # Also add a summary document for quick retrieval
+            if resume_summary:
+                from langchain_core.documents import Document
+                summary_doc = Document(
+                    page_content=f"RESUME SUMMARY:\n{resume_summary}",
+                    metadata={"source": "resume_summary", "type": "summary"}
+                )
+                docs.append(summary_doc)
 
     # Job description ingestion
     job_path = os.path.join(DATA_DIR, "job.txt")
@@ -73,6 +96,55 @@ def ingest_docs() -> None:
     chroma.add_documents(docs)
 
     logger.info("✅ Ingestion complete (%d chunks)", len(docs))
+    if resume_summary:
+        logger.info(f"📋 Resume summary: {resume_summary[:100]}...")
+
+
+def _extract_resume_summary(resume_text: str) -> str:
+    """Extract key information from resume using LLM."""
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.prompts import PromptTemplate
+        
+        # Check if OpenAI client is available
+        import os
+        if not os.getenv("OPENAI_API_KEY"):
+            logger.warning("⚠️ OPENAI_API_KEY not set, skipping resume summary extraction")
+            return ""
+        
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, timeout=10)
+        
+        prompt = PromptTemplate(
+            input_variables=["resume"],
+            template="""Extract key information from this resume. Provide a concise summary in this exact format:
+
+NAME: [Full name if available, otherwise "Not specified"]
+TITLE/ROLE: [Current or most recent job title]
+YEARS_OF_EXPERIENCE: [Total years of professional experience, estimate if not explicit]
+KEY_SKILLS: [Top 5-7 most important skills/technologies, comma-separated]
+EDUCATION: [Highest degree and field]
+KEY_ACHIEVEMENTS: [2-3 most impressive achievements or projects, one per line]
+
+Resume text:
+{resume}
+
+Provide ONLY the summary in the format above, nothing else. If information is not available, write "Not specified"."""
+        )
+        
+        chain = prompt | llm
+        # Limit to first 4000 chars to avoid token limits
+        limited_resume = resume_text[:4000] if len(resume_text) > 4000 else resume_text
+        summary = chain.invoke({"resume": limited_resume})
+        result = summary.content if hasattr(summary, 'content') else str(summary)
+        logger.info(f"✅ Extracted resume summary: {result[:100]}...")
+        return result
+    except Exception as e:
+        logger.warning(f"⚠️ Could not extract resume summary: {e}")
+        # Fallback: try to extract basic info from first lines
+        lines = [line.strip() for line in resume_text.split('\n')[:15] if line.strip()]
+        fallback = "\n".join(lines)
+        logger.info(f"📋 Using fallback summary (first 15 lines)")
+        return fallback
 
 
 # ---------------------------

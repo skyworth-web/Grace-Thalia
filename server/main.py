@@ -145,6 +145,7 @@ from fastapi.responses import StreamingResponse
 async def generate_stream(payload: dict):
     global generator_chain
     transcript = payload.get("transcript", "").strip()
+    chat_history = payload.get("chat_history", [])  # Get chat history from payload
 
     if generator_chain is None:
         return StreamingResponse(
@@ -156,8 +157,13 @@ async def generate_stream(payload: dict):
         async def streamer():
             try:
                 logger.info(f"🔄 Generating streaming answer for: {transcript[:100]}...")
-                # Invoke the chain to get the answer
-                result = generator_chain.invoke({"transcript": transcript})
+                logger.debug(f"📜 Chat history: {len(chat_history)} previous exchanges")
+                
+                # Invoke the chain with transcript and chat history
+                result = generator_chain.invoke({
+                    "transcript": transcript,
+                    "chat_history": chat_history
+                })
                 answer = result.get("answer") or result.get("text") or ""
                 
                 if not answer:
