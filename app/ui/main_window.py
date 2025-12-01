@@ -44,6 +44,9 @@ class MainWindow(QWidget):
             stt_url="http://localhost:8000/stt",
             callback=self._queue_transcript
         )
+        
+        # Initialize UI
+        self.init_ui()
     
     def _queue_transcript(self, text: str):
         """Thread-safe: add transcript to queue for GUI thread processing."""
@@ -68,8 +71,6 @@ class MainWindow(QWidget):
         # Stop timer if queue is empty
         if self.transcript_queue.empty():
             self.transcript_timer.stop()
-
-        self.init_ui()
 
     def init_ui(self):
         self.setWindowTitle("Interview Co-Pilot+ (Desktop)")
