@@ -269,72 +269,72 @@ class MicStream:
         
         try:
             for attempt in range(max_retries):
-            try:
-                with io.BytesIO() as wav_buffer:
-                    with wave.open(wav_buffer, "wb") as wf:
-                        wf.setnchannels(CHANNELS)
-                        wf.setsampwidth(self.p.get_sample_size(FORMAT))
-                        wf.setframerate(RATE)
-                        wf.writeframes(audio_bytes)
+                try:
+                    with io.BytesIO() as wav_buffer:
+                        with wave.open(wav_buffer, "wb") as wf:
+                            wf.setnchannels(CHANNELS)
+                            wf.setsampwidth(self.p.get_sample_size(FORMAT))
+                            wf.setframerate(RATE)
+                            wf.writeframes(audio_bytes)
 
-                    wav_data = wav_buffer.getvalue()
+                        wav_data = wav_buffer.getvalue()
 
-                logging.info(f"🎤 Sending audio to backend ({len(wav_data)} bytes, attempt {attempt + 1})")
+                    logging.info(f"🎤 Sending audio to backend ({len(wav_data)} bytes, attempt {attempt + 1})")
 
-                response = requests.post(
-                    self.stt_url,
-                    files={"file": ("audio.wav", wav_data, "audio/wav")},
-                    timeout=10,  # Shorter timeout for real-time
-                )
-
-                if response.status_code != 200:
-                    logging.warning(
-                        f"⚠️ STT failed with status {response.status_code}: {response.text}"
+                    response = requests.post(
+                        self.stt_url,
+                        files={"file": ("audio.wav", wav_data, "audio/wav")},
+                        timeout=10,  # Shorter timeout for real-time
                     )
+
+                    if response.status_code != 200:
+                        logging.warning(
+                            f"⚠️ STT failed with status {response.status_code}: {response.text}"
+                        )
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                        return
+
+                    json_data = response.json()
+                    text = json_data.get("transcript", "").strip()
+                    error_msg = json_data.get("error", "")
+
+                    if error_msg:
+                        logging.error(f"❌ STT error from backend: {error_msg}")
+                        return
+
+                    if text:
+                        logging.info(f"📝 Transcript received: {text}")
+                        # IMPORTANT: this callback will be a Qt signal emitter,
+                        # so calling it from this thread is SAFE.
+                        try:
+                            self.callback(text)
+                            logging.debug(f"✅ Callback executed successfully")
+                        except Exception as cb_err:
+                            logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
+                    else:
+                        logging.debug("⚠️ Empty transcript received from STT (no speech detected)")
+                    
+                    return  # Success, exit retry loop
+
+                except requests.exceptions.Timeout:
+                    logging.warning(f"⚠️ STT timeout (attempt {attempt + 1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        continue
+                except requests.exceptions.ConnectionError as e:
+                    logging.error(f"❌ STT connection error: {e}. Is the server running at {self.stt_url}?")
+                    return  # Don't retry connection errors
+                except Exception as e:
+                    logging.error(f"❌ STT error: {e}", exc_info=True)
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         continue
                     return
-
-                json_data = response.json()
-                text = json_data.get("transcript", "").strip()
-                error_msg = json_data.get("error", "")
-
-                if error_msg:
-                    logging.error(f"❌ STT error from backend: {error_msg}")
-                    return
-
-                if text:
-                    logging.info(f"📝 Transcript received: {text}")
-                    # IMPORTANT: this callback will be a Qt signal emitter,
-                    # so calling it from this thread is SAFE.
-                    try:
-                        self.callback(text)
-                        logging.debug(f"✅ Callback executed successfully")
-                    except Exception as cb_err:
-                        logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
-                else:
-                    logging.debug("⚠️ Empty transcript received from STT (no speech detected)")
-                
-                return  # Success, exit retry loop
         finally:
             # Always decrement pending requests counter
             self.pending_requests = max(0, self.pending_requests - 1)
-
-            except requests.exceptions.Timeout:
-                logging.warning(f"⚠️ STT timeout (attempt {attempt + 1}/{max_retries})")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-            except requests.exceptions.ConnectionError as e:
-                logging.error(f"❌ STT connection error: {e}. Is the server running at {self.stt_url}?")
-                return  # Don't retry connection errors
-            except Exception as e:
-                logging.error(f"❌ STT error: {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-                return
 
     # ---------------- Utility ----------------
 
