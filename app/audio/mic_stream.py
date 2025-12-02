@@ -147,10 +147,10 @@ class MicStream:
                         if dev['max_output_channels'] > 0:
                             logging.info(f"  Output {i}: {dev['name']} (hostapi: {dev.get('hostapi_name', 'unknown')})")
                     
-                    # Find best output device for loopback (avoid VB-Cable, prefer real speakers)
+                    # Find best output device for loopback (avoid VB-Cable and Sound Mapper, prefer real speakers)
                     all_devices_list = sd.query_devices()
-                    preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound', 'sound mapper']
-                    avoid_keywords = ['cable', 'vb-audio', 'virtual']
+                    preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound']
+                    avoid_keywords = ['cable', 'vb-audio', 'virtual', 'sound mapper', 'mapper']  # Sound Mapper doesn't support loopback
                     
                     best_device_id = None
                     # First, try to find a device with preferred keywords
@@ -259,32 +259,44 @@ class MicStream:
     # ---------------- Internal loops ----------------
     
     def _try_fallback_speaker_stream(self):
-        """Fallback to PyAudio for system audio (may interfere with playback)."""
+        """Fallback to PyAudio for system audio using Stereo Mix (may interfere with playback)."""
         try:
+            logging.info("🔄 Trying fallback: Using PyAudio with Stereo Mix...")
             # Try to find a "Stereo Mix" or similar device
-            devices = []
+            stereo_mix_devices = []
             for i in range(self.p.get_device_count()):
                 info = self.p.get_device_info_by_index(i)
                 if info['maxInputChannels'] > 0:
-                    devices.append((i, info['name']))
-                    # Look for "Stereo Mix", "What U Hear", or similar
-                    if any(keyword in info['name'].lower() for keyword in ['stereo mix', 'what u hear', 'loopback']):
-                        logging.info(f"Found system audio device: {info['name']} (index {i})")
-                        try:
-                            self.speaker_stream = self.p.open(
-                                format=FORMAT,
-                                channels=CHANNELS,
-                                rate=RATE,
-                                input=True,
-                                input_device_index=i,
-                                frames_per_buffer=CHUNK,
-                            )
-                            logging.info("✅ Fallback speaker stream opened successfully")
-                            return
-                        except Exception as e:
-                            logging.warning(f"⚠️ Failed to open device {i}: {e}")
+                    name_lower = info['name'].lower()
+                    # Look for "Stereo Mix", "What U Hear", or similar loopback devices
+                    if any(keyword in name_lower for keyword in ['stereo mix', 'what u hear', 'loopback']):
+                        stereo_mix_devices.append((i, info['name'], info['maxInputChannels']))
+                        logging.info(f"  Found Stereo Mix device: {info['name']} (index {i}, channels: {info['maxInputChannels']})")
             
-            logging.warning("⚠️ No suitable system audio device found. Continuing with mic only.")
+            # Try each Stereo Mix device
+            for device_idx, device_name, max_channels in stereo_mix_devices:
+                try:
+                    # Use the device's actual channel count
+                    channels_to_use = min(CHANNELS, max_channels) if max_channels > 0 else CHANNELS
+                    logging.info(f"🔄 Trying Stereo Mix device {device_idx} ({device_name}) with {channels_to_use} channels...")
+                    
+                    self.speaker_stream = self.p.open(
+                        format=FORMAT,
+                        channels=channels_to_use,
+                        rate=RATE,
+                        input=True,
+                        input_device_index=device_idx,
+                        frames_per_buffer=CHUNK,
+                    )
+                    logging.info(f"✅ Fallback speaker stream opened successfully (Stereo Mix: {device_name})")
+                    logging.warning("⚠️ Note: Stereo Mix may interfere with audio playback. Consider enabling it in Windows Sound settings if not working.")
+                    return
+                except Exception as e:
+                    logging.warning(f"⚠️ Failed to open Stereo Mix device {device_idx}: {e}")
+                    continue
+            
+            logging.warning("⚠️ No suitable Stereo Mix device found. Continuing with mic only.")
+            logging.info("💡 Tip: Enable 'Stereo Mix' in Windows Sound settings (Recording tab) for system audio capture.")
             self.speaker_stream = None
         except Exception as e:
             logging.warning(f"⚠️ Error setting up fallback speaker stream: {e}")
