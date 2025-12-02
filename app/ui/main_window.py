@@ -265,7 +265,7 @@ class MainWindow(QWidget):
         self.caption_window.show()
         self.caption_window.set_recording_status(True)
         try:
-        self.streamer.start_recording()
+            self.streamer.start_recording()
             logging.info("✅ Recording started successfully")
         except Exception as e:
             logging.error(f"❌ Failed to start recording: {e}")
