@@ -35,6 +35,14 @@ class CaptionWindow(QWidget):
         self.full_transcript = ""  # Accumulated full transcript
         self.last_update_time = 0
         
+        # Auto-reconciliation system (Windows Live Caption style)
+        self.transcript_buffer = []  # List of (timestamp, text) tuples
+        self.reconciled_text = ""  # Current reconciled/merged text
+        self.buffer_window = 3.0  # Keep transcripts from last 3 seconds for reconciliation
+        self.reconciliation_timer = QTimer()
+        self.reconciliation_timer.timeout.connect(self._reconcile_and_update)
+        self.reconciliation_timer.setInterval(100)  # Reconcile every 100ms
+        
         # For streaming answers
         self.answer_queue = Queue()
         self.answer_timer = QTimer()
@@ -216,92 +224,221 @@ class CaptionWindow(QWidget):
             self.status_label.setStyleSheet("font-size: 12px; color: #ff4444; padding: 4px;")
 
     def update_caption(self, text: str):
-        """Append new transcript chunk to the live caption view with smart merging (Windows Live Caption style)."""
-        logging.info(f"📝 CaptionWindow.update_caption called with: {text!r}")
-        
+        """
+        Add new transcript to buffer for reconciliation.
+        Windows Live Caption style: buffer transcripts and reconcile overlapping chunks.
+        """
         if not text or not text.strip():
-            logging.warning("⚠️ Empty text in update_caption")
             return
-
+        
         import time
         current_time = time.time()
         
-        # Update status to show we're receiving updates
+        new_text = text.strip()
+        logging.debug(f"📝 Adding transcript to buffer: '{new_text[:50]}...'")
+        
+        # Update status
         self.status_label.setText("🟢 Live captions active - receiving audio...")
         self.status_label.setStyleSheet("font-size: 12px; color: #00ff95; padding: 4px;")
         
-        # Add new text to full transcript
-        new_text = text.strip()
+        # Add to buffer with timestamp
+        self.transcript_buffer.append((current_time, new_text))
         
-        # Windows Live Caption style: simple append with basic deduplication
-        if self.full_transcript:
-            # Get last few words for overlap detection
-            last_words_list = self.full_transcript.split()[-10:]  # Last 10 words
-            last_words = " ".join(last_words_list).lower()
-            new_text_lower = new_text.lower()
-            new_words = new_text.split()
+        # Clean old transcripts (older than buffer_window)
+        cutoff_time = current_time - self.buffer_window
+        self.transcript_buffer = [(ts, txt) for ts, txt in self.transcript_buffer if ts >= cutoff_time]
+        
+        # Start reconciliation timer if not already running
+        if not self.reconciliation_timer.isActive():
+            self.reconciliation_timer.start()
+        
+        # Trigger immediate reconciliation for real-time feel
+        self._reconcile_and_update()
+    
+    def _reconcile_and_update(self):
+        """
+        Reconcile overlapping transcripts and update display.
+        Windows Live Caption style: merge overlapping chunks, update previous words.
+        """
+        import time
+        current_time = time.time()
+        
+        if not self.transcript_buffer:
+            return
+        
+        # Clean old transcripts
+        cutoff_time = current_time - self.buffer_window
+        self.transcript_buffer = [(ts, txt) for ts, txt in self.transcript_buffer if ts >= cutoff_time]
+        
+        if not self.transcript_buffer:
+            return
+        
+        # Sort by timestamp
+        sorted_buffer = sorted(self.transcript_buffer, key=lambda x: x[0])
+        
+        # Reconcile: merge overlapping transcripts intelligently (Windows Live Caption style)
+        # Use a sliding window approach: keep the best/most recent version of overlapping text
+        reconciled_words = []
+        word_timestamps = {}  # Track when each word was last seen (for freshness)
+        
+        for ts, text in sorted_buffer:
+            words = text.split()
             
-            # Aggressive filtering: If new text is a single common word and it appears in last 5 words, skip it
-            if len(new_words) == 1:
-                common_words = ["you", "uh", "um", "ah", "eh", "oh", "hmm", "mm", "the", "a", "an", "is", "are"]
-                if new_words[0].lower() in common_words:
-                    # Check if this word appears in the last 5 words
-                    recent_words = [w.lower() for w in last_words_list[-5:]]
-                    if new_words[0].lower() in recent_words:
-                        logging.debug(f"🔇 Skipping duplicate common word: {new_text}")
-                        return
+            if not reconciled_words:
+                # First transcript
+                reconciled_words = words
+                # Initialize timestamps
+                for i, word in enumerate(words):
+                    word_timestamps[i] = ts
+                continue
             
-            # Check for exact duplicate with last few words
-            if new_text_lower == last_words or new_text_lower in last_words:
-                logging.debug(f"🔇 Skipping exact duplicate: {new_text}")
-                return
+            # Find the best overlap point using word-level alignment
+            best_overlap = self._find_best_overlap(reconciled_words, words)
             
-            # Check if new text starts with words we already have (overlap)
-            # Find how many words overlap
-            overlap_found = False
-            
-            for i in range(min(len(new_words), len(last_words_list)), 0, -1):
-                new_prefix = " ".join(new_words[:i]).lower()
-                if last_words.endswith(new_prefix):
-                    # Found overlap, add only the new part
-                    if i < len(new_words):
-                        remaining_words = new_words[i:]
-                        self.full_transcript += " " + " ".join(remaining_words)
-                        overlap_found = True
+            if best_overlap > 0:
+                # Found overlap - merge intelligently
+                # Keep the newer version of overlapping words (they're more accurate)
+                overlap_start = len(reconciled_words) - best_overlap
+                
+                # Replace overlapping words with newer version (they may be corrections)
+                for i, new_word in enumerate(words[:best_overlap]):
+                    word_idx = overlap_start + i
+                    if word_idx < len(reconciled_words):
+                        # Update with newer word (might be a correction)
+                        reconciled_words[word_idx] = new_word
+                        word_timestamps[word_idx] = ts
+                
+                # Add new words after overlap
+                if best_overlap < len(words):
+                    new_words = words[best_overlap:]
+                    start_idx = len(reconciled_words)
+                    reconciled_words.extend(new_words)
+                    # Update timestamps for new words
+                    for i, word in enumerate(new_words):
+                        word_timestamps[start_idx + i] = ts
+            else:
+                # No overlap found - check if it's a correction of recent words
+                if len(words) > 0 and len(reconciled_words) > 0:
+                    # Check if new text starts with a word that appears in last 8 words
+                    first_new_word_clean = words[0].lower().strip(".,!?;:")
+                    last_words_clean = [w.lower().strip(".,!?;:") for w in reconciled_words[-8:]]
+                    
+                    if first_new_word_clean in last_words_clean:
+                        # Likely a correction - replace from that point
+                        idx = last_words_clean.index(first_new_word_clean)
+                        replace_start = len(reconciled_words) - (len(last_words_clean) - idx)
+                        # Replace with new text (assume it's more accurate)
+                        reconciled_words = reconciled_words[:replace_start] + words
+                        # Update timestamps
+                        for i, word in enumerate(words):
+                            word_timestamps[replace_start + i] = ts
                     else:
-                        # Complete overlap, skip
-                        logging.debug(f"🔇 Skipping complete overlap: {new_text}")
-                    break
+                        # Genuinely new text - append
+                        start_idx = len(reconciled_words)
+                        reconciled_words.extend(words)
+                        for i, word in enumerate(words):
+                            word_timestamps[start_idx + i] = ts
+                else:
+                    # First words or empty - just add
+                    start_idx = len(reconciled_words)
+                    reconciled_words.extend(words)
+                    for i, word in enumerate(words):
+                        word_timestamps[start_idx + i] = ts
+        
+        # Clean up: remove very old words that are likely outdated (older than 5 seconds)
+        if word_timestamps:
+            oldest_allowed = current_time - 5.0
+            words_to_keep = []
+            for i, word in enumerate(reconciled_words):
+                if i in word_timestamps and word_timestamps[i] >= oldest_allowed:
+                    words_to_keep.append((i, word))
+                elif i not in word_timestamps:
+                    # Keep words without timestamps (shouldn't happen, but be safe)
+                    words_to_keep.append((i, word))
             
-            # No overlap found, just append
-            if not overlap_found:
-                self.full_transcript += " " + new_text
-        else:
-            # First chunk
-            self.full_transcript = new_text
-
-        # Windows Live Caption style: Show recent text (last 2-3 lines, ~50-80 words)
-        # This gives the real-time streaming feel
-        all_words = self.full_transcript.split()
-        # Show last 60 words for better readability (like Windows Live Caption)
-        display_words = all_words[-60:] if len(all_words) > 60 else all_words
+            if words_to_keep:
+                # Rebuild reconciled_words keeping only recent words
+                reconciled_words = [word for _, word in words_to_keep]
+                # Rebuild timestamps
+                new_timestamps = {}
+                for new_idx, (old_idx, _) in enumerate(words_to_keep):
+                    if old_idx in word_timestamps:
+                        new_timestamps[new_idx] = word_timestamps[old_idx]
+                word_timestamps = new_timestamps
+        
+        # Update reconciled text
+        self.reconciled_text = " ".join(reconciled_words)
+        
+        # Update full transcript (for answer generation)
+        self.full_transcript = self.reconciled_text
+        
+        # Display: Show last 60 words (Windows Live Caption style)
+        display_words = reconciled_words[-60:] if len(reconciled_words) > 60 else reconciled_words
         display_text = " ".join(display_words)
         
-        # Update the display immediately (must be called from GUI thread)
-        logging.info(f"📺 Setting caption text ({len(display_words)} words): {display_text[:100]}...")
-        
-        # Use setPlainText which is thread-safe when called from GUI thread
+        # Update display
         self.caption_text_edit.setPlainText(display_text)
-
-        # Auto-scroll to end for real-time feel
+        
+        # Auto-scroll to end
         cursor = self.caption_text_edit.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.caption_text_edit.setTextCursor(cursor)
         
-        # Update the widget (no repaint needed - Qt handles it)
-        
         self.last_update_time = current_time
-        logging.debug(f"✅ Caption display updated at {current_time}")
+    
+    def _normalize_text(self, text: str) -> str:
+        """Normalize text for comparison (remove punctuation, lowercase, normalize spaces)."""
+        import re
+        # Remove punctuation, lowercase, normalize spaces
+        normalized = re.sub(r'[^\w\s]', '', text.lower())
+        normalized = ' '.join(normalized.split())
+        return normalized
+    
+    def _normalize_word(self, word: str) -> str:
+        """Normalize a single word for comparison."""
+        return word.lower().strip(".,!?;:\"'()[]{}")
+    
+    def _find_best_overlap(self, existing_words: list, new_words: list) -> int:
+        """
+        Find the best overlap point between existing and new words.
+        Returns the number of overlapping words (0 if no good overlap found).
+        """
+        if not existing_words or not new_words:
+            return 0
+        
+        max_overlap = min(len(existing_words), len(new_words), 12)  # Check up to 12 words
+        
+        # Try to find the longest matching suffix-prefix
+        for overlap_len in range(max_overlap, 0, -1):
+            existing_suffix = existing_words[-overlap_len:]
+            new_prefix = new_words[:overlap_len]
+            
+            # Normalize words for comparison
+            existing_normalized = [self._normalize_word(w) for w in existing_suffix]
+            new_normalized = [self._normalize_word(w) for w in new_prefix]
+            
+            # Check if they match (allowing for minor differences)
+            matches = sum(1 for e, n in zip(existing_normalized, new_normalized) if e == n)
+            match_ratio = matches / overlap_len if overlap_len > 0 else 0
+            
+            # Require at least 80% match for a valid overlap
+            if match_ratio >= 0.8:
+                return overlap_len
+        
+        return 0
+    
+    def _texts_similar(self, text1: str, text2: str) -> bool:
+        """
+        Check if two text strings are similar (for overlap detection).
+        """
+        if not text1 or not text2:
+            return False
+        
+        # Check if one contains the other (for partial matches)
+        if len(text1) > len(text2):
+            return text2 in text1 or text1.startswith(text2[:min(len(text2), len(text1)//2)])
+        else:
+            return text1 in text2 or text2.startswith(text1[:min(len(text1), len(text2)//2)])
 
     def mousePressEvent(self, event: QMouseEvent):
         """Handle mouse press for window dragging."""

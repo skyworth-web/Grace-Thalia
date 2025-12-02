@@ -61,16 +61,16 @@ class MicStream:
         self.speaker_queue = Queue()  # Queue for system audio from sounddevice
         self.is_windows = platform.system() == "Windows"
 
-        # Real-time streaming parameters - smaller chunks with overlap
-        self.chunk_duration = 0.8  # seconds per chunk (smaller for lower latency)
-        self.overlap_duration = 0.4  # seconds of overlap (50% overlap)
+        # Real-time streaming parameters - optimized for better accuracy with reconciliation
+        self.chunk_duration = 2.5  # seconds per chunk (longer for better context and accuracy)
+        self.overlap_duration = 1.5  # seconds of overlap (60% overlap for better reconciliation)
         self.bytes_per_frame = 2 * CHANNELS  # 16-bit = 2 bytes * channels
         self.frames_per_chunk = int(self.chunk_duration * RATE)
         self.bytes_per_chunk = self.frames_per_chunk * self.bytes_per_frame
         self.overlap_bytes = int(self.overlap_duration * RATE * self.bytes_per_frame)
         
         # Sliding window buffer for overlapping chunks
-        self.audio_buffer = deque(maxlen=int(3 * RATE * self.bytes_per_frame))  # Keep ~3 seconds max
+        self.audio_buffer = deque(maxlen=int(5 * RATE * self.bytes_per_frame))  # Keep ~5 seconds max
         
         # Thread pool for concurrent STT processing (reduced to prevent overload)
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="STT")
@@ -78,11 +78,16 @@ class MicStream:
         
         # Request throttling - track last request time
         self.last_request_time = 0
-        self.min_request_interval = 0.5  # Minimum 0.5 seconds between requests
+        self.min_request_interval = 1.0  # Minimum 1.0 seconds between requests (longer chunks = less frequent)
         
         # Track last processed position to avoid duplicate processing
         self.last_processed_pos = 0
         self.pending_requests = 0  # Track number of pending requests
+        
+        # Transcript reconciliation - store recent transcripts with timestamps
+        self.recent_transcripts = []  # List of (timestamp, text, chunk_id) tuples
+        self.transcript_lock = threading.Lock()  # Lock for thread-safe transcript access
+        self.chunk_counter = 0  # Unique ID for each chunk
 
     # ---------------- Recording control ----------------
 
@@ -627,10 +632,24 @@ class MicStream:
 
                     if text:
                         logging.info(f"📝 Transcript received: {text}")
+                        # Store transcript with timestamp and chunk ID for reconciliation
+                        current_time = time.time()
+                        chunk_id = self.chunk_counter
+                        self.chunk_counter += 1
+                        
+                        with self.transcript_lock:
+                            # Add to recent transcripts (keep last 5)
+                            self.recent_transcripts.append((current_time, text, chunk_id))
+                            if len(self.recent_transcripts) > 5:
+                                self.recent_transcripts.pop(0)
+                            
+                            # Reconcile transcripts - merge overlapping content
+                            reconciled_text = self._reconcile_transcripts()
+                        
                         # IMPORTANT: this callback will be a Qt signal emitter,
                         # so calling it from this thread is SAFE.
                         try:
-                            self.callback(text)
+                            self.callback(reconciled_text)
                             logging.debug(f"✅ Callback executed successfully")
                         except Exception as cb_err:
                             logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
@@ -657,6 +676,61 @@ class MicStream:
             # Always decrement pending requests counter
             self.pending_requests = max(0, self.pending_requests - 1)
 
+    # ---------------- Transcript Reconciliation ----------------
+    
+    def _reconcile_transcripts(self) -> str:
+        """
+        Reconcile overlapping transcripts to create a smooth, accurate caption.
+        Similar to Windows Live Caption's auto-reconciliation.
+        """
+        if not self.recent_transcripts:
+            return ""
+        
+        if len(self.recent_transcripts) == 1:
+            return self.recent_transcripts[0][1]  # Return the only transcript
+        
+        # Sort by timestamp (should already be sorted, but be safe)
+        transcripts = sorted(self.recent_transcripts, key=lambda x: x[0])
+        
+        # Start with the oldest transcript
+        result_words = transcripts[0][1].split()
+        
+        # Merge subsequent transcripts, handling overlaps
+        for i in range(1, len(transcripts)):
+            new_text = transcripts[i][1]
+            new_words = new_text.split()
+            
+            if not new_words:
+                continue
+            
+            # Find overlap with current result
+            # Check last 10 words of result against first words of new transcript
+            overlap_len = 0
+            check_len = min(10, len(result_words), len(new_words))
+            
+            for j in range(check_len, 0, -1):
+                result_suffix = " ".join(result_words[-j:]).lower()
+                new_prefix = " ".join(new_words[:j]).lower()
+                
+                # Check for exact match or high similarity
+                if result_suffix == new_prefix:
+                    overlap_len = j
+                    break
+                # Also check for partial match (fuzzy)
+                elif j >= 3 and result_suffix.endswith(new_prefix[-len(new_prefix)//2:]):
+                    overlap_len = j - 1  # Conservative overlap
+                    break
+            
+            # Add non-overlapping words
+            if overlap_len < len(new_words):
+                result_words.extend(new_words[overlap_len:])
+            # If new transcript is better quality (longer), replace overlapping section
+            elif len(new_words) > len(result_words[-overlap_len:]):
+                # Replace last overlap_len words with new_words
+                result_words = result_words[:-overlap_len] + new_words
+        
+        return " ".join(result_words)
+    
     # ---------------- Audio Processing ----------------
 
     def _mix_audio(self, mic_data: bytes, speaker_data: bytes) -> bytes:

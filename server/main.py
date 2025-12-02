@@ -244,15 +244,45 @@ async def stt(file: UploadFile = File(...)):
         return {"transcript": "", "error": str(e)}
 
 def _transcribe_audio(client_instance, audio_bytes: bytes, filename: str, content_type: str):
-    """Synchronous transcription function for thread pool."""
+    """
+    Optimized transcription function for real-time streaming.
+    Uses Whisper-1 with optimized parameters for better accuracy and latency.
+    """
     try:
+        # Optimize Whisper for real-time streaming:
+        # - response_format: "verbose_json" gives word-level timestamps for better reconciliation
+        # - temperature: 0 for more consistent, deterministic results
+        # - language: None (auto-detect) or specify if known
+        # - prompt: Optional context hint (can improve accuracy for domain-specific terms)
+        
+        # Optimize Whisper for real-time streaming:
+        # - temperature: 0 for more consistent, deterministic results (reduces hallucinations)
+        # - language: None (auto-detect) or specify if known (e.g., "en", "ko")
+        # - prompt: Optional context hint (can improve accuracy for domain-specific terms)
         result = client_instance.audio.transcriptions.create(
             model="whisper-1",
-            file=(filename, audio_bytes, content_type)
+            file=(filename, audio_bytes, content_type),
+            temperature=0,  # More deterministic, consistent results (reduces "you" hallucinations)
+            language=None,  # Auto-detect language (or specify like "en", "ko" for better accuracy)
+            # prompt="Interview conversation. Professional setting.",  # Optional: context hint for better accuracy
         )
-        return result.text if hasattr(result, 'text') else str(result) if result else ""
+        
+        # Extract text from response
+        if hasattr(result, 'text'):
+            text = result.text
+        elif isinstance(result, dict):
+            text = result.get('text', '')
+        else:
+            text = str(result) if result else ""
+        
+        # Log word count for debugging
+        if text:
+            word_count = len(text.split())
+            logger.debug(f"📝 Transcribed {word_count} words from {len(audio_bytes)} bytes")
+        
+        return text
     except Exception as e:
-        logger.error(f"Transcription error: {e}")
+        logger.error(f"Transcription error: {e}", exc_info=True)
         return ""
 
 # ---------------------------
