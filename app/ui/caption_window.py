@@ -137,8 +137,8 @@ class CaptionWindow(QWidget):
             QTextEdit {
                 font-size: 20px;
                 color: #00ff95;
-                background-color: rgba(0, 0, 0, 220);
-                border: 2px solid rgba(0, 255, 149, 100);
+                background-color: rgba(0, 0, 0, 30);
+                border: 2px solid rgba(0, 255, 149, 10);
                 border-radius: 10px;
                 padding: 15px;
                 min-height: 150px;
@@ -171,8 +171,8 @@ class CaptionWindow(QWidget):
             QTextEdit {
                 font-size: 20px;
                 color: #4da6ff;
-                background-color: rgba(0, 0, 0, 220);
-                border: 2px solid rgba(77, 166, 255, 100);
+                background-color: rgba(0, 0, 0, 40);
+                border: 2px solid rgba(77, 166, 255, 10);
                 border-radius: 10px;
                 padding: 15px;
                 min-height: 100px;
@@ -199,7 +199,7 @@ class CaptionWindow(QWidget):
         container.setLayout(main_layout)
         container.setStyleSheet("""
             QWidget {
-                background-color: rgba(20, 20, 30, 240);
+                background-color: rgba(20, 20, 30, 30);
                 border-radius: 15px;
                 border: 2px solid rgba(255, 255, 255, 30);
             }
