@@ -295,7 +295,11 @@ class MicStream:
                         frames_per_buffer=CHUNK,
                     )
                     logging.info(f"✅ Fallback speaker stream opened successfully (Stereo Mix: {device_name})")
-                    logging.warning("⚠️ Note: Stereo Mix may interfere with audio playback. Consider enabling it in Windows Sound settings if not working.")
+                    logging.info("ℹ️ Stereo Mix is capturing system audio. Audio should still play normally through your speakers.")
+                    logging.info("ℹ️ If you can't hear audio, check Windows Sound settings:")
+                    logging.info("   1. Right-click speaker icon → Sounds → Playback tab")
+                    logging.info("   2. Ensure 'Speakers (Realtek High Definition Audio)' is set as Default Device")
+                    logging.info("   3. Recording tab → Stereo Mix → Properties → Listen tab → Uncheck 'Listen to this device'")
                     return
                 except Exception as e:
                     logging.warning(f"⚠️ Failed to open Stereo Mix device {device_idx}: {e}")
