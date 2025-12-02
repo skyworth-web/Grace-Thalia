@@ -200,8 +200,6 @@ class MicStream:
                         logging.info("✅ WASAPI loopback thread started")
                     else:
                         raise Exception("No suitable output device found for loopback")
-                    else:
-                        raise Exception("No default output device found")
                 except Exception as e:
                     logging.warning(f"⚠️ Could not find default output device: {e}. Trying fallback method...")
                     self._try_fallback_speaker_stream()
