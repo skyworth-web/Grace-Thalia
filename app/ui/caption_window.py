@@ -120,40 +120,7 @@ class CaptionWindow(QWidget):
 
         main_layout.addLayout(header_layout)
 
-        # Question/Caption area
-        question_label = QLabel("📝 Question (Live Caption):")
-        question_label.setStyleSheet("""
-            font-size: 13px; 
-            color: #00ff95; 
-            font-weight: bold;
-            background: transparent;
-            margin-bottom: 5px;
-        """)
-        main_layout.addWidget(question_label)
-
-        self.caption_text_edit = QTextEdit()
-        self.caption_text_edit.setReadOnly(True)
-        self.caption_text_edit.setStyleSheet("""
-            QTextEdit {
-                font-size: 20px;
-                color: #00ff95;
-                background-color: rgba(0, 0, 0, 30);
-                border: 2px solid rgba(0, 255, 149, 10);
-                border-radius: 10px;
-                padding: 15px;
-                min-height: 150px;
-                max-height: 300px;
-            }
-        """)
-        self.caption_text_edit.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        self.caption_text_edit.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-        main_layout.addWidget(self.caption_text_edit)
-
-        # Answer area
+        # Answer area (moved to top)
         answer_label = QLabel("💬 AI Answer:")
         answer_label.setStyleSheet("""
             font-size: 13px; 
@@ -190,6 +157,40 @@ class CaptionWindow(QWidget):
             QSizePolicy.Policy.Preferred
         )
         main_layout.addWidget(self.answer_text_edit)
+
+        # Question/Caption area (moved to bottom)
+        question_label = QLabel("📝 Question (Live Caption):")
+        question_label.setStyleSheet("""
+            font-size: 13px; 
+            color: #00ff95; 
+            font-weight: bold;
+            background: transparent;
+            margin-top: 10px;
+            margin-bottom: 5px;
+        """)
+        main_layout.addWidget(question_label)
+
+        self.caption_text_edit = QTextEdit()
+        self.caption_text_edit.setReadOnly(True)
+        self.caption_text_edit.setStyleSheet("""
+            QTextEdit {
+                font-size: 20px;
+                color: #00ff95;
+                background-color: rgba(0, 0, 0, 30);
+                border: 2px solid rgba(0, 255, 149, 10);
+                border-radius: 10px;
+                padding: 15px;
+                min-height: 150px;
+                max-height: 300px;
+            }
+        """)
+        self.caption_text_edit.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.caption_text_edit.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        main_layout.addWidget(self.caption_text_edit)
 
         # Add stretch to push content to top
         main_layout.addStretch()
@@ -235,6 +236,29 @@ class CaptionWindow(QWidget):
         current_time = time.time()
         
         new_text = text.strip()
+        
+        # Check if this is a duplicate of recent transcripts (prevent repetition)
+        cutoff_time = current_time - 2.0  # Check last 2 seconds
+        recent_texts = [txt for ts, txt in self.transcript_buffer if ts >= cutoff_time]
+        
+        # Normalize for comparison
+        new_text_normalized = self._normalize_text(new_text)
+        
+        # Check if this exact text was recently added (within last 2 seconds)
+        is_duplicate = False
+        for recent_text in recent_texts:
+            recent_normalized = self._normalize_text(recent_text)
+            # If texts are very similar (90%+ match), it's likely a duplicate
+            if new_text_normalized == recent_normalized or \
+               (len(new_text_normalized) > 10 and new_text_normalized in recent_normalized) or \
+               (len(recent_normalized) > 10 and recent_normalized in new_text_normalized):
+                is_duplicate = True
+                logging.debug(f"🚫 Skipping duplicate transcript: '{new_text[:50]}...'")
+                break
+        
+        if is_duplicate:
+            return  # Skip duplicate transcripts
+        
         logging.debug(f"📝 Adding transcript to buffer: '{new_text[:50]}...'")
         
         # Update status
@@ -375,6 +399,21 @@ class CaptionWindow(QWidget):
         # Display: Show last 60 words (Windows Live Caption style)
         display_words = reconciled_words[-60:] if len(reconciled_words) > 60 else reconciled_words
         display_text = " ".join(display_words)
+        
+        # Prevent displaying the same text repeatedly
+        current_display = self.caption_text_edit.toPlainText().strip()
+        if current_display and display_text.strip():
+            # Check if the new text is just a repetition of the current display
+            current_normalized = self._normalize_text(current_display)
+            new_normalized = self._normalize_text(display_text)
+            
+            # If new text is contained in current text and they're very similar, skip update
+            if len(new_normalized) > 0 and len(current_normalized) > 0:
+                # Check if new text is just a repeat of the end of current text
+                if new_normalized in current_normalized and len(new_normalized) < len(current_normalized) * 0.8:
+                    # It's likely a duplicate - only update if significantly different
+                    logging.debug(f"🔄 Skipping duplicate display update (new: {len(new_normalized)} chars, current: {len(current_normalized)} chars)")
+                    return
         
         # Update display
         self.caption_text_edit.setPlainText(display_text)
