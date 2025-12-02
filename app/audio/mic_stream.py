@@ -11,6 +11,15 @@ import numpy as np
 from queue import Queue
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
+import platform
+
+# sounddevice for WASAPI loopback (Windows system audio capture)
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    SOUNDDEVICE_AVAILABLE = False
+    logging.warning("sounddevice not available. System audio capture may be limited.")
 
 # pycaw is Windows-only, make it optional
 try:
@@ -27,8 +36,8 @@ RATE = 44100
 CHUNK = 1024
 
 # You can override these via MainWindow if you want later
-MIC_DEVICE_INDEX = 1        # physical mic
-SPEAKER_DEVICE_INDEX = 2    # VB-Cable / system audio
+MIC_DEVICE_INDEX = None  # Will use default if None
+USE_WASAPI_LOOPBACK = True  # Use WASAPI loopback for system audio (Windows only)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -48,6 +57,9 @@ class MicStream:
         self.p = pyaudio.PyAudio()
         self.mic_stream = None
         self.speaker_stream = None
+        self.speaker_stream_sd = None  # sounddevice stream for WASAPI loopback
+        self.speaker_queue = Queue()  # Queue for system audio from sounddevice
+        self.is_windows = platform.system() == "Windows"
 
         # Real-time streaming parameters - smaller chunks with overlap
         self.chunk_duration = 0.8  # seconds per chunk (smaller for lower latency)
@@ -123,21 +135,40 @@ class MicStream:
             self.running = False
             raise
 
-        # Speaker / VB-Cable stream (optional - may not exist on all systems)
-        try:
-            logging.info(f"Attempting to open speaker stream with device index {SPEAKER_DEVICE_INDEX}")
-            self.speaker_stream = self.p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                input=True,
-                input_device_index=SPEAKER_DEVICE_INDEX,
-                frames_per_buffer=CHUNK,
-            )
-            logging.info("✅ Speaker stream opened successfully")
-        except Exception as e:
-            logging.warning(f"⚠️ Speaker stream not available (device {SPEAKER_DEVICE_INDEX}): {e}. Continuing with mic only.")
-            self.speaker_stream = None
+        # System audio capture - use WASAPI loopback on Windows (doesn't interfere with playback)
+        if USE_WASAPI_LOOPBACK and self.is_windows and SOUNDDEVICE_AVAILABLE:
+            try:
+                logging.info("Attempting to open WASAPI loopback stream for system audio...")
+                # Find default output device for loopback
+                try:
+                    default_output = sd.query_devices(kind='output')
+                    if default_output:
+                        device_id = default_output['index']
+                        device_name = default_output['name']
+                        logging.info(f"Using output device {device_id}: {device_name}")
+                        
+                        # Start a background thread to capture system audio via WASAPI loopback
+                        self.speaker_capture_thread = threading.Thread(
+                            target=self._capture_system_audio_loopback,
+                            args=(device_id,),
+                            daemon=True
+                        )
+                        self.speaker_capture_thread.start()
+                        logging.info("✅ WASAPI loopback stream started successfully")
+                    else:
+                        raise Exception("No default output device found")
+                except Exception as e:
+                    logging.warning(f"⚠️ Could not find default output device: {e}. Trying fallback method...")
+                    self._try_fallback_speaker_stream()
+            except Exception as e:
+                logging.warning(f"⚠️ WASAPI loopback not available: {e}. Trying fallback method...")
+                self._try_fallback_speaker_stream()
+        else:
+            if not self.is_windows:
+                logging.info("⚠️ WASAPI loopback is Windows-only. Using fallback method.")
+            if not SOUNDDEVICE_AVAILABLE:
+                logging.warning("⚠️ sounddevice not available. Using fallback method.")
+            self._try_fallback_speaker_stream()
 
         logging.info("🎤 Recording started - Live captions active")
 
@@ -166,6 +197,10 @@ class MicStream:
                 self.speaker_stream.stop_stream()
                 self.speaker_stream.close()
                 self.speaker_stream = None
+            
+            if self.speaker_stream_sd is not None:
+                self.speaker_stream_sd.stop()
+                self.speaker_stream_sd = None
 
             if self.p is not None:
                 self.p.terminate()
@@ -179,6 +214,79 @@ class MicStream:
             logging.error(f"Error while stopping recording: {e}")
 
     # ---------------- Internal loops ----------------
+    
+    def _try_fallback_speaker_stream(self):
+        """Fallback to PyAudio for system audio (may interfere with playback)."""
+        try:
+            # Try to find a "Stereo Mix" or similar device
+            devices = []
+            for i in range(self.p.get_device_count()):
+                info = self.p.get_device_info_by_index(i)
+                if info['maxInputChannels'] > 0:
+                    devices.append((i, info['name']))
+                    # Look for "Stereo Mix", "What U Hear", or similar
+                    if any(keyword in info['name'].lower() for keyword in ['stereo mix', 'what u hear', 'loopback']):
+                        logging.info(f"Found system audio device: {info['name']} (index {i})")
+                        try:
+                            self.speaker_stream = self.p.open(
+                                format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                input=True,
+                                input_device_index=i,
+                                frames_per_buffer=CHUNK,
+                            )
+                            logging.info("✅ Fallback speaker stream opened successfully")
+                            return
+                        except Exception as e:
+                            logging.warning(f"⚠️ Failed to open device {i}: {e}")
+            
+            logging.warning("⚠️ No suitable system audio device found. Continuing with mic only.")
+            self.speaker_stream = None
+        except Exception as e:
+            logging.warning(f"⚠️ Error setting up fallback speaker stream: {e}")
+            self.speaker_stream = None
+    
+    def _capture_system_audio_loopback(self, device_id):
+        """Capture system audio using WASAPI loopback (runs in background thread)."""
+        try:
+            def audio_callback(indata, frames, time_info, status):
+                """Callback for sounddevice to capture system audio."""
+                if status:
+                    logging.warning(f"⚠️ Audio callback status: {status}")
+                # Convert float32 to int16 and queue for mixing
+                # Handle both mono and stereo
+                if indata.ndim == 1:
+                    # Mono - duplicate to stereo
+                    indata = np.column_stack((indata, indata))
+                audio_int16 = (indata * 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+                # Put in queue (non-blocking, drop if queue is full to prevent lag)
+                try:
+                    self.speaker_queue.put_nowait(audio_bytes)
+                except:
+                    pass  # Queue full, drop this chunk
+            
+            # Open WASAPI loopback stream on output device (enables loopback automatically on Windows)
+            # Use WASAPI backend explicitly
+            self.speaker_stream_sd = sd.InputStream(
+                device=device_id,
+                channels=CHANNELS,
+                samplerate=RATE,
+                dtype='float32',
+                blocksize=CHUNK,
+                callback=audio_callback,
+                latency='low'
+            )
+            self.speaker_stream_sd.start()
+            logging.info("✅ WASAPI loopback stream started")
+            
+            # Keep thread alive while running
+            while self.running and self.speaker_stream_sd.active:
+                time.sleep(0.1)
+        except Exception as e:
+            logging.error(f"❌ Error in WASAPI loopback capture: {e}", exc_info=True)
+            self.speaker_stream_sd = None
 
     def _capture_loop(self):
         """Continuously capture audio from mic + speaker and send overlapping segments to STT."""
@@ -193,15 +301,26 @@ class MicStream:
                 try:
                     mic_data = self.mic_stream.read(CHUNK, exception_on_overflow=False)
                     
-                    # Read speaker data and mix with mic audio
-                    if self.speaker_stream is not None:
+                    # Get system audio from WASAPI loopback (if available) or fallback
+                    speaker_data = None
+                    if self.speaker_stream_sd is not None and self.speaker_stream_sd.active:
+                        # Try to get audio from WASAPI loopback queue (non-blocking)
+                        # Get the most recent chunk if multiple are queued
+                        try:
+                            while True:
+                                speaker_data = self.speaker_queue.get_nowait()
+                        except:
+                            pass  # Use the last chunk we got, or None if queue was empty
+                    elif self.speaker_stream is not None:
+                        # Fallback: read from PyAudio stream
                         try:
                             speaker_data = self.speaker_stream.read(CHUNK, exception_on_overflow=False)
-                            # Mix mic + speaker audio (50/50 mix)
-                            mixed_audio = self._mix_audio(mic_data, speaker_data)
                         except Exception as e:
                             logging.warning(f"⚠️ Error reading speaker stream: {e}")
-                            mixed_audio = mic_data
+                    
+                    # Mix mic + speaker audio if available
+                    if speaker_data:
+                        mixed_audio = self._mix_audio(mic_data, speaker_data)
                     else:
                         mixed_audio = mic_data
                     
