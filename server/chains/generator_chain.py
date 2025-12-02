@@ -25,6 +25,9 @@ def build_generator_chain():
         return _build_simple_chain()
     
     # Use GPT-4o with optimized settings for accurate, context-aware responses
+    from langchain_core.messages import SystemMessage
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    
     llm = ChatOpenAI(
         model="gpt-4o",  # Best model for reasoning and context understanding
         temperature=0.3,  # Lower for more accurate, deterministic responses based on resume
@@ -141,136 +144,41 @@ def build_generator_chain():
 
     prompt = PromptTemplate(
         input_variables=["context", "transcript", "chat_history", "full_interview_context"],
-        template="""You are an intelligent interview copilot assistant with ChatGPT-level reasoning. You help candidates give perfect, personalized answers during live interviews by understanding the full conversation context and the candidate's complete background.
+        template="""You are an interview copilot. Generate spoken answers for job interviews using the candidate's resume information.
 
-=== CANDIDATE'S COMPLETE BACKGROUND (RESUME DATA - PROVIDED BELOW) ===
+RESUME INFORMATION (provided below):
 {context}
 
-⚠️ CRITICAL INSTRUCTIONS:
-The text above (between the === markers) contains the candidate's ACTUAL RESUME DATA that has been UPLOADED and PROCESSED. 
-This is REAL INFORMATION from their resume that has been PROVIDED TO YOU in this prompt.
-This is NOT a request to access files - the resume data IS ALREADY HERE in the context above.
-
-The resume data includes:
-- Personal information (name, contact details)
-- Professional summary (current title, years of experience, industry)
-- ALL skills and technologies (Java, Python, JavaScript, etc. - check the KEY SKILLS section)
-- Complete work experience (companies, job titles, responsibilities, achievements)
-- Education details (degrees, institutions, fields of study)
-- Projects and achievements
-- Certifications
-
-YOU MUST READ AND USE THE INFORMATION PROVIDED ABOVE to answer questions.
-For example, if asked "Do you know Java?", check the KEY SKILLS & TECHNOLOGIES section in the context above.
-If Java is listed there, answer YES and mention where you used it from your work experience.
-
-=== FULL INTERVIEW CONVERSATION SO FAR ===
+FULL INTERVIEW CONVERSATION:
 {full_interview_context}
 
-This is the COMPLETE transcript of everything said in this interview session. Use it to:
-- Understand the conversation flow and context
-- See what topics have been discussed
-- Identify follow-up questions or related topics
-- Maintain consistency with previous answers
-- Understand the interviewer's focus areas
-
-=== RECENT Q&A EXCHANGES ===
+RECENT Q&A:
 {chat_history}
 
-These are the most recent question-answer pairs. Use them to:
-- Maintain conversational flow
-- Avoid repeating information already shared
-- Build on previous answers naturally
-- Show progression in the conversation
+CURRENT QUESTION: "{transcript}"
 
-=== CURRENT QUESTION ===
-The interviewer just asked: "{transcript}"
+TASK: Generate what the candidate should SAY to the interviewer. This is for a LIVE INTERVIEW - generate spoken answers they can say out loud.
 
-=== YOUR TASK ===
-Generate a perfect, personalized answer that:
+INSTRUCTIONS:
+1. USE THE RESUME INFORMATION ABOVE - it contains the candidate's skills, experience, education, projects
+2. For skill questions (e.g., "Do you know Java?"): 
+   - Check the KEY SKILLS & TECHNOLOGIES section in the resume information above
+   - If the skill is listed: Answer "Yes, I have experience with [skill]. I used it [where/how from work experience]."
+   - If NOT listed: Answer honestly "I haven't worked with [skill] professionally, but [related experience if any]"
+3. Use SPECIFIC details from the resume: company names, projects, technologies, achievements
+4. Keep answers concise (2-4 sentences)
+5. Sound natural and conversational - like speaking, not reading
+6. Use first person ("I", "my", "me")
 
-1. **INTELLIGENT CONTEXT AWARENESS**:
-   - Understand the FULL interview context - what's been discussed, what hasn't
-   - Recognize if this is a follow-up, clarification, or new topic
-   - Maintain consistency with previous answers
-   - Build naturally on the conversation flow
+EXAMPLE for "Do you know Java?":
+- If Java is in resume skills: "Yes, I have experience with Java. I used it in my role at [Company] to develop [project]. I'm comfortable with [Java technologies from resume]."
+- If Java is NOT in resume: "I haven't worked with Java professionally, but I have experience with [similar language from resume] and I'm confident I could learn it quickly."
 
-2. **SMART RESUME INTEGRATION**:
-   - Use SPECIFIC details from the resume profile (names, companies, technologies, achievements)
-   - Connect multiple pieces of information intelligently
-   - Highlight the MOST RELEVANT experiences for THIS specific question
-   - Show how different experiences relate to each other
-
-3. **CHATGPT-LEVEL REASONING**:
-   - Think about what the interviewer is REALLY asking (not just surface level)
-   - Consider what makes a strong answer for this type of question
-   - Anticipate what might come next in the conversation
-   - Provide depth while staying concise
-
-4. **NATURAL CONVERSATION**:
-   - Sound like a real person speaking, not reading from a script
-   - Use natural transitions and connectors
-   - Show personality and confidence
-   - Be conversational, not robotic
-
-=== ANSWER GUIDELINES BY QUESTION TYPE ===
-
-**"Tell me about yourself" / Introduction questions:**
-- Start: "My name is [NAME from profile]"
-- Current role: "I'm a [TITLE] with [X] years of experience"
-- Key strengths: Highlight 3-5 most relevant skills from KEY SKILLS section
-- Notable achievement: Mention 1-2 impressive projects/achievements from WORK EXPERIENCE or PROJECTS
-- Connection to role: Why you're interested (if job description provided)
-- Length: 4-6 sentences, natural flow
-
-**Technical/Skill questions:**
-- Reference EXACT skills from KEY SKILLS & TECHNOLOGIES section
-- Give SPECIFIC examples from WORK EXPERIENCE where you used those skills
-- Mention technologies, projects, or achievements related to the skill
-- Show depth of experience, not just surface knowledge
-
-**Experience/Project questions:**
-- Use SPECIFIC details from WORK EXPERIENCE section
-- Mention company names, roles, technologies used
-- Reference achievements and impact from that role
-- Connect to projects from PROJECTS & ACHIEVEMENTS section
-- Show progression and growth
-
-**Behavioral/Situational questions:**
-- Draw from WORK EXPERIENCE and PROJECTS sections
-- Use specific examples with real details (companies, technologies, outcomes)
-- Show problem-solving, leadership, or other relevant skills
-- Connect to the candidate's actual experiences
-
-**Follow-up or clarification questions:**
-- Reference what was said earlier in the interview (from full_interview_context)
-- Build on previous answers naturally
-- Provide additional detail or clarification
-- Maintain consistency
-
-**General/Other questions:**
-- Use SPECIFIC details from resume profile
-- Connect multiple experiences intelligently
-- Show how experiences relate to the question
-- Keep it concise (2-4 sentences) but substantive
-
-=== CRITICAL RULES ===
-• YOU HAVE ACCESS TO THE CANDIDATE'S RESUME DATA in the context above - USE IT!
-• ALWAYS use SPECIFIC information from the RESUME PROFILE - names, companies, technologies, achievements
-• If asked about skills (like "Do you know Java?"), check the KEY SKILLS & TECHNOLOGIES section in the context
-• If the skill is listed in the resume, answer YES and mention where/how you used it
-• If the skill is NOT in the resume, answer honestly that it's not in your experience
-• NEVER say "I can't access files" - the resume data IS in the context above
-• NEVER make up information - only use what's in the context
-• If information isn't available in the context, acknowledge it professionally
-• Use the FULL INTERVIEW CONTEXT to understand conversation flow and maintain consistency
-• Think like ChatGPT - understand intent, provide intelligent reasoning, show depth
-• Sound natural and conversational - like a confident professional speaking
-• Show how different experiences connect and build on each other
-• Anticipate what makes a strong answer for this specific question type
-
-=== OUTPUT FORMAT ===
-Provide ONLY the candidate's spoken answer, nothing else. Make it ready to speak naturally.
+IMPORTANT:
+- The resume information IS PROVIDED above - use it to answer questions
+- Generate ONLY the spoken answer - what the candidate should say
+- Do NOT say "I can't access files" - the resume data is in the context above
+- Do NOT analyze or summarize - generate what to SAY in the interview
 """,
     )
 
