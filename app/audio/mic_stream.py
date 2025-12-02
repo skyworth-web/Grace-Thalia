@@ -387,11 +387,21 @@ class MicStream:
                         logging.info(f"🎯 Found WASAPI host API: {hostapi.get('name', 'unknown')} (index {idx})")
                         break
                 
+                # Get device info to check supported channels
+                device_info = devices[loopback_device]
+                max_channels = device_info.get('max_output_channels', CHANNELS)
+                # Use the minimum of requested channels and device's max channels
+                actual_channels = min(CHANNELS, max_channels) if max_channels > 0 else CHANNELS
+                
+                # If device only supports mono, we'll handle that in the callback
+                if actual_channels < CHANNELS:
+                    logging.info(f"⚠️ Device supports {actual_channels} channel(s), requested {CHANNELS}. Will convert in callback.")
+                
                 # Open stream - sounddevice should automatically enable loopback when opening
                 # an InputStream on an output device with WASAPI
                 self.speaker_stream_sd = sd.InputStream(
                     device=loopback_device,
-                    channels=CHANNELS,
+                    channels=actual_channels,  # Use device's actual channel count
                     samplerate=RATE,
                     dtype='float32',
                     blocksize=CHUNK,
@@ -399,7 +409,7 @@ class MicStream:
                     latency='low'
                 )
                 self.speaker_stream_sd.start()
-                logging.info(f"✅ WASAPI loopback stream started (device {loopback_device})")
+                logging.info(f"✅ WASAPI loopback stream started (device {loopback_device}, channels={actual_channels})")
                 
                 # Wait a moment to see if callback starts
                 time.sleep(0.5)
@@ -407,7 +417,26 @@ class MicStream:
                     logging.warning("⚠️ WASAPI callback not being called - loopback may not be working")
             except Exception as stream_error:
                 logging.error(f"❌ Failed to start WASAPI loopback stream: {stream_error}")
-                raise
+                # Try with mono (1 channel) as fallback
+                try:
+                    logging.info("🔄 Trying with mono (1 channel) as fallback...")
+                    self.speaker_stream_sd = sd.InputStream(
+                        device=loopback_device,
+                        channels=1,
+                        samplerate=RATE,
+                        dtype='float32',
+                        blocksize=CHUNK,
+                        callback=audio_callback,
+                        latency='low'
+                    )
+                    self.speaker_stream_sd.start()
+                    logging.info(f"✅ WASAPI loopback stream started with mono (device {loopback_device})")
+                    time.sleep(0.5)
+                    if callback_count == 0:
+                        logging.warning("⚠️ WASAPI callback not being called - loopback may not be working")
+                except Exception as fallback_error:
+                    logging.error(f"❌ Fallback to mono also failed: {fallback_error}")
+                    raise stream_error  # Raise original error
             
             # Keep thread alive while running and monitor
             last_log_time = time.time()
