@@ -139,13 +139,21 @@ class MicStream:
         if USE_WASAPI_LOOPBACK and self.is_windows and SOUNDDEVICE_AVAILABLE:
             try:
                 logging.info("Attempting to open WASAPI loopback stream for system audio...")
-                # Find default output device for loopback
+                # List all devices to help debug
                 try:
+                    all_devices = sd.query_devices()
+                    logging.info("📋 Available audio devices:")
+                    for i, dev in enumerate(all_devices):
+                        if dev['max_output_channels'] > 0:
+                            logging.info(f"  Output {i}: {dev['name']} (hostapi: {dev.get('hostapi_name', 'unknown')})")
+                    
+                    # Find default output device for loopback
                     default_output = sd.query_devices(kind='output')
                     if default_output:
                         device_id = default_output['index']
                         device_name = default_output['name']
-                        logging.info(f"Using output device {device_id}: {device_name}")
+                        hostapi_name = default_output.get('hostapi_name', 'unknown')
+                        logging.info(f"🎯 Selected output device {device_id}: {device_name} (hostapi: {hostapi_name})")
                         
                         # Start a background thread to capture system audio via WASAPI loopback
                         self.speaker_capture_thread = threading.Thread(
@@ -154,7 +162,7 @@ class MicStream:
                             daemon=True
                         )
                         self.speaker_capture_thread.start()
-                        logging.info("✅ WASAPI loopback stream started successfully")
+                        logging.info("✅ WASAPI loopback thread started")
                     else:
                         raise Exception("No default output device found")
                 except Exception as e:
@@ -249,40 +257,112 @@ class MicStream:
     
     def _capture_system_audio_loopback(self, device_id):
         """Capture system audio using WASAPI loopback (runs in background thread)."""
+        callback_count = 0
         try:
             def audio_callback(indata, frames, time_info, status):
                 """Callback for sounddevice to capture system audio."""
+                nonlocal callback_count
+                callback_count += 1
                 if status:
                     logging.warning(f"⚠️ Audio callback status: {status}")
+                
+                # Log periodically to confirm callback is working
+                if callback_count % 100 == 0:
+                    logging.debug(f"🔊 WASAPI loopback callback #{callback_count}, frames: {frames}, shape: {indata.shape}")
+                
                 # Convert float32 to int16 and queue for mixing
                 # Handle both mono and stereo
                 if indata.ndim == 1:
                     # Mono - duplicate to stereo
                     indata = np.column_stack((indata, indata))
+                elif indata.shape[1] != CHANNELS:
+                    # Ensure correct channel count
+                    if indata.shape[1] == 1:
+                        indata = np.column_stack((indata[:, 0], indata[:, 0]))
+                    else:
+                        indata = indata[:, :CHANNELS]
+                
+                # Convert to int16
                 audio_int16 = (indata * 32767).astype(np.int16)
                 audio_bytes = audio_int16.tobytes()
+                
                 # Put in queue (non-blocking, drop if queue is full to prevent lag)
                 try:
                     self.speaker_queue.put_nowait(audio_bytes)
                 except:
-                    pass  # Queue full, drop this chunk
+                    # Queue full, drop this chunk to prevent lag
+                    if callback_count % 500 == 0:
+                        logging.warning("⚠️ Speaker queue full, dropping audio chunks")
             
-            # Open WASAPI loopback stream on output device (enables loopback automatically on Windows)
-            # Use WASAPI backend explicitly
-            self.speaker_stream_sd = sd.InputStream(
-                device=device_id,
-                channels=CHANNELS,
-                samplerate=RATE,
-                dtype='float32',
-                blocksize=CHUNK,
-                callback=audio_callback,
-                latency='low'
-            )
-            self.speaker_stream_sd.start()
-            logging.info("✅ WASAPI loopback stream started")
+            # List all devices to find the right one
+            logging.info("🔍 Listing available audio devices for loopback...")
+            devices = sd.query_devices()
+            for i, dev in enumerate(devices):
+                if dev['max_output_channels'] > 0:
+                    logging.info(f"  Output device {i}: {dev['name']} (hostapi: {dev['hostapi']})")
             
-            # Keep thread alive while running
-            while self.running and self.speaker_stream_sd.active:
+            # Try to use WASAPI backend explicitly
+            # On Windows, opening an InputStream on an output device should enable loopback
+            # But we need to make sure we're using the WASAPI hostapi
+            wasapi_devices = [i for i, dev in enumerate(devices) 
+                            if dev['max_output_channels'] > 0 and 'wasapi' in dev.get('hostapi_name', '').lower()]
+            
+            if wasapi_devices:
+                # Prefer WASAPI devices
+                loopback_device = wasapi_devices[0] if device_id not in wasapi_devices else device_id
+                logging.info(f"🎯 Using WASAPI device {loopback_device}: {devices[loopback_device]['name']}")
+            else:
+                loopback_device = device_id
+                logging.info(f"🎯 Using device {loopback_device}: {devices[loopback_device]['name']}")
+            
+            # Open WASAPI loopback stream on output device
+            # On Windows with WASAPI, opening InputStream on output device enables loopback
+            # Try to explicitly use WASAPI backend
+            try:
+                # Set default host API to WASAPI if available
+                hostapis = sd.query_hostapis()
+                wasapi_hostapi = None
+                for hostapi in hostapis:
+                    if 'wasapi' in hostapi['name'].lower():
+                        wasapi_hostapi = hostapi['index']
+                        logging.info(f"🎯 Found WASAPI host API: {hostapi['name']} (index {wasapi_hostapi})")
+                        break
+                
+                # Open stream - sounddevice should automatically enable loopback when opening
+                # an InputStream on an output device with WASAPI
+                self.speaker_stream_sd = sd.InputStream(
+                    device=loopback_device,
+                    channels=CHANNELS,
+                    samplerate=RATE,
+                    dtype='float32',
+                    blocksize=CHUNK,
+                    callback=audio_callback,
+                    latency='low'
+                )
+                self.speaker_stream_sd.start()
+                logging.info(f"✅ WASAPI loopback stream started (device {loopback_device})")
+                
+                # Wait a moment to see if callback starts
+                time.sleep(0.5)
+                if callback_count == 0:
+                    logging.warning("⚠️ WASAPI callback not being called - loopback may not be working")
+            except Exception as stream_error:
+                logging.error(f"❌ Failed to start WASAPI loopback stream: {stream_error}")
+                raise
+            
+            # Keep thread alive while running and monitor
+            last_log_time = time.time()
+            while self.running:
+                if self.speaker_stream_sd.active:
+                    # Log queue status periodically
+                    current_time = time.time()
+                    if current_time - last_log_time > 5.0:  # Every 5 seconds
+                        queue_size = self.speaker_queue.qsize()
+                        logging.info(f"🔊 WASAPI loopback active: callbacks={callback_count}, queue_size={queue_size}")
+                        last_log_time = current_time
+                else:
+                    logging.error("❌ WASAPI loopback stream became inactive!")
+                    break
                 time.sleep(0.1)
         except Exception as e:
             logging.error(f"❌ Error in WASAPI loopback capture: {e}", exc_info=True)
@@ -305,12 +385,18 @@ class MicStream:
                     speaker_data = None
                     if self.speaker_stream_sd is not None and self.speaker_stream_sd.active:
                         # Try to get audio from WASAPI loopback queue (non-blocking)
-                        # Get the most recent chunk if multiple are queued
+                        # Get the most recent chunk if multiple are queued (to avoid lag)
+                        latest_chunk = None
                         try:
                             while True:
-                                speaker_data = self.speaker_queue.get_nowait()
+                                latest_chunk = self.speaker_queue.get_nowait()
                         except:
-                            pass  # Use the last chunk we got, or None if queue was empty
+                            speaker_data = latest_chunk  # Use the last chunk we got, or None if queue was empty
+                        
+                        # Debug: log if we're not getting speaker data
+                        if speaker_data is None and chunk_count % 100 == 0:
+                            queue_size = self.speaker_queue.qsize()
+                            logging.warning(f"⚠️ No speaker data available (queue_size={queue_size}, active={self.speaker_stream_sd.active})")
                     elif self.speaker_stream is not None:
                         # Fallback: read from PyAudio stream
                         try:
