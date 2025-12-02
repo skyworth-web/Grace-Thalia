@@ -147,22 +147,59 @@ class MicStream:
                         if dev['max_output_channels'] > 0:
                             logging.info(f"  Output {i}: {dev['name']} (hostapi: {dev.get('hostapi_name', 'unknown')})")
                     
-                    # Find default output device for loopback
-                    default_output = sd.query_devices(kind='output')
-                    if default_output:
-                        device_id = default_output['index']
-                        device_name = default_output['name']
-                        hostapi_name = default_output.get('hostapi_name', 'unknown')
-                        logging.info(f"🎯 Selected output device {device_id}: {device_name} (hostapi: {hostapi_name})")
+                    # Find best output device for loopback (avoid VB-Cable, prefer real speakers)
+                    all_devices_list = sd.query_devices()
+                    preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound', 'sound mapper']
+                    avoid_keywords = ['cable', 'vb-audio', 'virtual']
+                    
+                    best_device_id = None
+                    # First, try to find a device with preferred keywords
+                    for i, dev in enumerate(all_devices_list):
+                        if dev['max_output_channels'] > 0:
+                            name_lower = dev['name'].lower()
+                            # Skip virtual cable devices
+                            if any(avoid in name_lower for avoid in avoid_keywords):
+                                continue
+                            # Prefer devices with preferred keywords
+                            if any(pref in name_lower for pref in preferred_keywords):
+                                best_device_id = i
+                                logging.info(f"🎯 Found preferred output device {i}: {dev['name']}")
+                                break
+                    
+                    # If no preferred device found, use default but avoid VB-Cable
+                    if best_device_id is None:
+                        default_output = sd.query_devices(kind='output')
+                        if default_output:
+                            default_id = default_output['index']
+                            default_name = default_output['name'].lower()
+                            # Check if default is not a VB-Cable device
+                            if not any(avoid in default_name for avoid in avoid_keywords):
+                                best_device_id = default_id
+                                logging.info(f"🎯 Using default output device {default_id}: {default_output['name']}")
+                            else:
+                                # Find any non-VB-Cable device
+                                for i, dev in enumerate(all_devices_list):
+                                    if dev['max_output_channels'] > 0:
+                                        name_lower = dev['name'].lower()
+                                        if not any(avoid in name_lower for avoid in avoid_keywords):
+                                            best_device_id = i
+                                            logging.info(f"🎯 Using fallback output device {i}: {dev['name']}")
+                                            break
+                    
+                    if best_device_id is not None:
+                        selected_device = all_devices_list[best_device_id]
+                        logging.info(f"🎯 Selected output device {best_device_id}: {selected_device['name']}")
                         
                         # Start a background thread to capture system audio via WASAPI loopback
                         self.speaker_capture_thread = threading.Thread(
                             target=self._capture_system_audio_loopback,
-                            args=(device_id,),
+                            args=(best_device_id,),
                             daemon=True
                         )
                         self.speaker_capture_thread.start()
                         logging.info("✅ WASAPI loopback thread started")
+                    else:
+                        raise Exception("No suitable output device found for loopback")
                     else:
                         raise Exception("No default output device found")
                 except Exception as e:
@@ -301,31 +338,55 @@ class MicStream:
                 if dev['max_output_channels'] > 0:
                     logging.info(f"  Output device {i}: {dev['name']} (hostapi: {dev['hostapi']})")
             
-            # Try to use WASAPI backend explicitly
-            # On Windows, opening an InputStream on an output device should enable loopback
-            # But we need to make sure we're using the WASAPI hostapi
-            wasapi_devices = [i for i, dev in enumerate(devices) 
-                            if dev['max_output_channels'] > 0 and 'wasapi' in dev.get('hostapi_name', '').lower()]
+            # Find the best output device for loopback
+            # Prefer actual speakers/headphones over VB-Cable virtual devices
+            preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound', 'sound mapper']
+            avoid_keywords = ['cable', 'vb-audio', 'virtual']
             
-            if wasapi_devices:
-                # Prefer WASAPI devices
-                loopback_device = wasapi_devices[0] if device_id not in wasapi_devices else device_id
-                logging.info(f"🎯 Using WASAPI device {loopback_device}: {devices[loopback_device]['name']}")
-            else:
-                loopback_device = device_id
-                logging.info(f"🎯 Using device {loopback_device}: {devices[loopback_device]['name']}")
+            best_device = None
+            best_device_id = device_id
+            
+            # First, try to find a device with preferred keywords
+            for i, dev in enumerate(devices):
+                if dev['max_output_channels'] > 0:
+                    name_lower = dev['name'].lower()
+                    # Skip virtual cable devices
+                    if any(avoid in name_lower for avoid in avoid_keywords):
+                        continue
+                    # Prefer devices with preferred keywords
+                    if any(pref in name_lower for pref in preferred_keywords):
+                        best_device = i
+                        best_device_id = i
+                        logging.info(f"🎯 Found preferred device {i}: {dev['name']}")
+                        break
+            
+            # If no preferred device found, use the default but avoid VB-Cable
+            if best_device is None:
+                for i, dev in enumerate(devices):
+                    if dev['max_output_channels'] > 0:
+                        name_lower = dev['name'].lower()
+                        if not any(avoid in name_lower for avoid in avoid_keywords):
+                            best_device = i
+                            best_device_id = i
+                            logging.info(f"🎯 Using fallback device {i}: {dev['name']}")
+                            break
+            
+            # Final fallback to original device_id
+            if best_device is None:
+                best_device_id = device_id
+                logging.info(f"🎯 Using original device {device_id}: {devices[device_id]['name']}")
+            
+            loopback_device = best_device_id
+            logging.info(f"🎯 Final selection: device {loopback_device}: {devices[loopback_device]['name']}")
             
             # Open WASAPI loopback stream on output device
             # On Windows with WASAPI, opening InputStream on output device enables loopback
-            # Try to explicitly use WASAPI backend
             try:
-                # Set default host API to WASAPI if available
+                # Check available host APIs (for logging only)
                 hostapis = sd.query_hostapis()
-                wasapi_hostapi = None
-                for hostapi in hostapis:
-                    if 'wasapi' in hostapi['name'].lower():
-                        wasapi_hostapi = hostapi['index']
-                        logging.info(f"🎯 Found WASAPI host API: {hostapi['name']} (index {wasapi_hostapi})")
+                for idx, hostapi in enumerate(hostapis):
+                    if 'wasapi' in hostapi.get('name', '').lower():
+                        logging.info(f"🎯 Found WASAPI host API: {hostapi.get('name', 'unknown')} (index {idx})")
                         break
                 
                 # Open stream - sounddevice should automatically enable loopback when opening
