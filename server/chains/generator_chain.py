@@ -24,10 +24,10 @@ def build_generator_chain():
         logger.warning("⚠️ Vector store missing - generator will work without resume context")
         return _build_simple_chain()
     
-    # Use GPT-4o with optimized settings for intelligent, context-aware responses
+    # Use GPT-4o with optimized settings for accurate, context-aware responses
     llm = ChatOpenAI(
         model="gpt-4o",  # Best model for reasoning and context understanding
-        temperature=0.7,  # Slightly higher for more natural, varied responses while staying accurate
+        temperature=0.3,  # Lower for more accurate, deterministic responses based on resume
         streaming=True,  # Enable streaming for real-time answers
         max_tokens=500,  # Limit length for concise, interview-appropriate answers
     )
@@ -75,9 +75,21 @@ def build_generator_chain():
             smart_query = question
         
         # Get retrieval results with smart query
-        retrieved_docs = retriever.invoke(smart_query)
+        logger.info(f"🔍 Retrieving documents for query: '{question[:100]}...'")
+        try:
+            retrieved_docs = retriever.invoke(smart_query)
+            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents")
+        except Exception as e:
+            logger.error(f"❌ Retrieval error: {e}", exc_info=True)
+            # Fallback: try to get all documents
+            try:
+                retrieved_docs = _chroma_instance.similarity_search(question, k=10)
+                logger.info(f"📚 Fallback retrieval: {len(retrieved_docs)} documents")
+            except Exception as e2:
+                logger.error(f"❌ Fallback retrieval also failed: {e2}")
+                retrieved_docs = []
         
-        # Try to get summary document if not already in results
+        # ALWAYS ensure summary is included - it's critical for accurate answers
         try:
             # Check if summary is already in retrieved_docs
             summary_in_results = any(
@@ -85,20 +97,45 @@ def build_generator_chain():
             )
             
             if not summary_in_results:
+                logger.warning("⚠️ Summary not in retrieval results, fetching separately...")
                 # Try to find summary document using a general query
                 summary_results = _chroma_instance.similarity_search(
                     "resume summary profile name skills experience background",
-                    k=1
+                    k=3  # Get more candidates
                 )
                 
                 # Check if any result is a summary
                 for doc in summary_results:
                     if doc.metadata.get("type") == "summary":
                         retrieved_docs.insert(0, doc)  # Add summary at the beginning
-                        logger.debug("✅ Added summary document to retrieval results")
+                        logger.info("✅ Added summary document to retrieval results")
                         break
+                else:
+                    # If still no summary, try direct search
+                    logger.warning("⚠️ Summary not found with similarity search, trying direct metadata search...")
+                    # Get all documents and find summary
+                    all_docs = _chroma_instance.get()
+                    for doc_id, metadata in zip(all_docs.get('ids', []), all_docs.get('metadatas', [])):
+                        if metadata and metadata.get('type') == 'summary':
+                            # Found summary, retrieve it
+                            summary_doc = _chroma_instance.get(ids=[doc_id])
+                            if summary_doc and summary_doc.get('documents'):
+                                from langchain_core.documents import Document
+                                summary_doc_obj = Document(
+                                    page_content=summary_doc['documents'][0],
+                                    metadata=metadata
+                                )
+                                retrieved_docs.insert(0, summary_doc_obj)
+                                logger.info("✅ Found and added summary document")
+                                break
         except Exception as e:
-            logger.debug(f"Could not fetch summary separately: {e}")
+            logger.error(f"❌ Error fetching summary: {e}", exc_info=True)
+        
+        # Log what we retrieved
+        if retrieved_docs:
+            logger.info(f"📄 Retrieved documents: {[doc.metadata.get('type', 'unknown') for doc in retrieved_docs[:5]]}")
+        else:
+            logger.error("❌ NO DOCUMENTS RETRIEVED! Resume may not be ingested properly.")
         
         return retrieved_docs
 
@@ -106,17 +143,26 @@ def build_generator_chain():
         input_variables=["context", "transcript", "chat_history", "full_interview_context"],
         template="""You are an intelligent interview copilot assistant with ChatGPT-level reasoning. You help candidates give perfect, personalized answers during live interviews by understanding the full conversation context and the candidate's complete background.
 
-=== CANDIDATE'S COMPLETE BACKGROUND ===
+=== CANDIDATE'S COMPLETE BACKGROUND (RESUME DATA - PROVIDED BELOW) ===
 {context}
 
-This includes a comprehensive RESUME PROFILE with:
-- Personal information (name, contact)
-- Professional summary (title, years of experience, industry)
-- ALL skills and technologies
-- Complete work experience with companies, roles, responsibilities, achievements
-- Education details
+⚠️ CRITICAL INSTRUCTIONS:
+The text above (between the === markers) contains the candidate's ACTUAL RESUME DATA that has been UPLOADED and PROCESSED. 
+This is REAL INFORMATION from their resume that has been PROVIDED TO YOU in this prompt.
+This is NOT a request to access files - the resume data IS ALREADY HERE in the context above.
+
+The resume data includes:
+- Personal information (name, contact details)
+- Professional summary (current title, years of experience, industry)
+- ALL skills and technologies (Java, Python, JavaScript, etc. - check the KEY SKILLS section)
+- Complete work experience (companies, job titles, responsibilities, achievements)
+- Education details (degrees, institutions, fields of study)
 - Projects and achievements
 - Certifications
+
+YOU MUST READ AND USE THE INFORMATION PROVIDED ABOVE to answer questions.
+For example, if asked "Do you know Java?", check the KEY SKILLS & TECHNOLOGIES section in the context above.
+If Java is listed there, answer YES and mention where you used it from your work experience.
 
 === FULL INTERVIEW CONVERSATION SO FAR ===
 {full_interview_context}
@@ -209,9 +255,14 @@ Generate a perfect, personalized answer that:
 - Keep it concise (2-4 sentences) but substantive
 
 === CRITICAL RULES ===
+• YOU HAVE ACCESS TO THE CANDIDATE'S RESUME DATA in the context above - USE IT!
 • ALWAYS use SPECIFIC information from the RESUME PROFILE - names, companies, technologies, achievements
+• If asked about skills (like "Do you know Java?"), check the KEY SKILLS & TECHNOLOGIES section in the context
+• If the skill is listed in the resume, answer YES and mention where/how you used it
+• If the skill is NOT in the resume, answer honestly that it's not in your experience
+• NEVER say "I can't access files" - the resume data IS in the context above
 • NEVER make up information - only use what's in the context
-• If information isn't available, acknowledge it professionally rather than guessing
+• If information isn't available in the context, acknowledge it professionally
 • Use the FULL INTERVIEW CONTEXT to understand conversation flow and maintain consistency
 • Think like ChatGPT - understand intent, provide intelligent reasoning, show depth
 • Sound natural and conversational - like a confident professional speaking
@@ -227,7 +278,9 @@ Provide ONLY the candidate's spoken answer, nothing else. Make it ready to speak
     def format_context(docs):
         """Format retrieved documents into context string with summary prioritized."""
         if not docs:
-            return "No resume or job description information available."
+            logger.error("❌ NO DOCUMENTS TO FORMAT - Resume may not be ingested!")
+            return "ERROR: No resume information available. Please ensure resume has been uploaded and ingested via /ingest endpoint."
+        
         context_parts = []
         summary_doc = None
         
@@ -240,11 +293,14 @@ Provide ONLY the candidate's spoken answer, nothing else. Make it ready to speak
         # Always include summary first if available
         if summary_doc:
             context_parts.append("=" * 60)
-            context_parts.append("RESUME PROFILE (Complete Background):")
+            context_parts.append("RESUME PROFILE (Complete Background - USE THIS DATA):")
             context_parts.append("=" * 60)
             context_parts.append(summary_doc.page_content)
             context_parts.append("=" * 60)
             context_parts.append("\nDETAILED RESUME SECTIONS:\n")
+            logger.info(f"✅ Found resume summary ({len(summary_doc.page_content)} chars)")
+        else:
+            logger.warning("⚠️ No summary document found in retrieval results")
         
         # Add other documents (resume chunks and job description)
         for doc in docs:
@@ -254,8 +310,15 @@ Provide ONLY the candidate's spoken answer, nothing else. Make it ready to speak
                 if content:
                     context_parts.append(f"[{source}]: {content}")
         
-        result = "\n\n".join(context_parts) if context_parts else "No relevant information found."
-        logger.debug(f"📄 Formatted context ({len(result)} chars) from {len(docs)} documents")
+        result = "\n\n".join(context_parts) if context_parts else "ERROR: No relevant information found in resume."
+        logger.info(f"📄 Formatted context ({len(result)} chars) from {len(docs)} documents")
+        
+        # Log a sample to verify it has data
+        if len(result) < 100:
+            logger.error(f"❌ Context is too short ({len(result)} chars) - resume data may be missing!")
+        else:
+            logger.debug(f"✅ Context sample: {result[:300]}...")
+        
         return result
     
     # Helper to format chat history
@@ -337,8 +400,9 @@ def _build_simple_chain():
     logger.warning("⚠️ Building generator chain without resume context")
     llm = ChatOpenAI(
         model="gpt-4o",
-        temperature=0.6,
+        temperature=0.3,  # Lower for more accurate responses
         streaming=True,
+        max_tokens=500,
     )
 
     prompt = PromptTemplate(
