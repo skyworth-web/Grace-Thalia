@@ -206,6 +206,12 @@ class MicStream:
             except Exception as e:
                 logging.warning(f"⚠️ WASAPI loopback not available: {e}. Trying fallback method...")
                 self._try_fallback_speaker_stream()
+            
+            # Check if WASAPI loopback actually started (wait a moment for thread to initialize)
+            time.sleep(0.5)
+            if self.speaker_stream_sd is None or not self.speaker_stream_sd.active:
+                logging.warning("⚠️ WASAPI loopback failed to start. Trying Stereo Mix fallback...")
+                self._try_fallback_speaker_stream()
         else:
             if not self.is_windows:
                 logging.info("⚠️ WASAPI loopback is Windows-only. Using fallback method.")
@@ -350,8 +356,9 @@ class MicStream:
             
             # Find the best output device for loopback
             # Prefer actual speakers/headphones over VB-Cable virtual devices
-            preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound', 'sound mapper']
-            avoid_keywords = ['cable', 'vb-audio', 'virtual']
+            # NOTE: "Microsoft Sound Mapper" doesn't support loopback, so we avoid it
+            preferred_keywords = ['speakers', 'headphone', 'realtek', 'primary sound']
+            avoid_keywords = ['cable', 'vb-audio', 'virtual', 'sound mapper', 'mapper']
             
             best_device = None
             best_device_id = device_id
@@ -448,7 +455,10 @@ class MicStream:
                         logging.warning("⚠️ WASAPI callback not being called - loopback may not be working")
                 except Exception as fallback_error:
                     logging.error(f"❌ Fallback to mono also failed: {fallback_error}")
-                    raise stream_error  # Raise original error
+                    logging.warning("⚠️ WASAPI loopback not working. Will try Stereo Mix fallback...")
+                    # Don't raise - let it fall through to the fallback handler in start_recording
+                    self.speaker_stream_sd = None
+                    return  # Exit this thread, fallback will be handled by start_recording
             
             # Keep thread alive while running and monitor
             last_log_time = time.time()
