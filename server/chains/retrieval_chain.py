@@ -18,8 +18,18 @@ logger = logging.getLogger(__name__)
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 
-# Initialize embedding model globally
-EMBED_MODEL = OpenAIEmbeddings(model="text-embedding-3-small")
+# Lazy initialization of embedding model (only when needed, after API key is set)
+_EMBED_MODEL = None
+
+def get_embed_model():
+    """Get or create the embedding model (lazy initialization)."""
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        # Check if API key is set
+        if not os.getenv("OPENAI_API_KEY"):
+            raise ValueError("OPENAI_API_KEY must be set before using embeddings")
+        _EMBED_MODEL = OpenAIEmbeddings(model="text-embedding-3-small")
+    return _EMBED_MODEL
 
 
 # ============================================================
@@ -40,7 +50,7 @@ def ingest_docs() -> None:
         shutil.rmtree(CHROMA_DIR)
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
-    chroma = Chroma(embedding_function=EMBED_MODEL, persist_directory=CHROMA_DIR)
+    chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=300)
 
     docs = []
@@ -105,7 +115,7 @@ def append_transcript_chunk(text: str, speaker: str = "unknown", timestamp: str 
         return False
 
     timestamp = timestamp or str(datetime.now())
-    chroma = Chroma(embedding_function=EMBED_MODEL, persist_directory=CHROMA_DIR)
+    chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
     chunks = splitter.create_documents([text])
@@ -134,7 +144,7 @@ def build_chain():
     if not os.path.exists(CHROMA_DIR):
         raise ValueError("Vector store missing — run /ingest first.")
 
-    chroma = Chroma(embedding_function=EMBED_MODEL, persist_directory=CHROMA_DIR)
+    chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
     retriever = chroma.as_retriever(search_kwargs={"k": 6})
 
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3)
@@ -184,7 +194,7 @@ def build_retriever(k: int = 5):
     if not os.path.exists(CHROMA_DIR):
         raise ValueError("Vector store missing — run /ingest first.")
 
-    chroma = Chroma(embedding_function=EMBED_MODEL, persist_directory=CHROMA_DIR)
+    chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
     return chroma.as_retriever(search_kwargs={"k": k})
 
 
