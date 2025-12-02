@@ -455,12 +455,32 @@ class CaptionWindow(QWidget):
             event.accept()
 
     def clear_text(self):
-        self.caption_history = []
-        self.full_transcript = ""
+        """Clear all caption text, reset transcript buffer, and start fresh."""
+        import time
+        
+        # Clear display
         self.caption_text_edit.clear()
         self.answer_text_edit.setPlainText("AI answers will appear here...")
-        self.chat_history = []  # Clear chat history when clearing captions
-        logging.info("🧹 Cleared chat history")
+        
+        # Reset all transcript-related state
+        self.caption_history = []
+        self.full_transcript = ""
+        self.reconciled_text = ""
+        self.transcript_buffer = []  # Clear the reconciliation buffer - this is key!
+        
+        # Reset timestamps
+        self.last_update_time = 0
+        
+        # Clear chat history and current state
+        self.chat_history = []
+        self.current_question = ""
+        self.current_answer = ""
+        
+        # Update status to show we're ready for new audio
+        self.status_label.setText("🟢 Ready - waiting for new audio...")
+        self.status_label.setStyleSheet("font-size: 12px; color: #00ff95; padding: 4px;")
+        
+        logging.info("🧹 Cleared all captions and reset transcript buffer - ready for new audio from this point")
 
     def generate_answer(self):
         # Use full_transcript instead of displayed text to get complete transcript
