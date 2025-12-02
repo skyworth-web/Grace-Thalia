@@ -24,10 +24,12 @@ def build_generator_chain():
         logger.warning("⚠️ Vector store missing - generator will work without resume context")
         return _build_simple_chain()
     
+    # Use GPT-4o with optimized settings for intelligent, context-aware responses
     llm = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0.6,
-        streaming=True,  # Enable streaming
+        model="gpt-4o",  # Best model for reasoning and context understanding
+        temperature=0.7,  # Slightly higher for more natural, varied responses while staying accurate
+        streaming=True,  # Enable streaming for real-time answers
+        max_tokens=500,  # Limit length for concise, interview-appropriate answers
     )
 
     embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
@@ -39,16 +41,41 @@ def build_generator_chain():
     # Store chroma instance for use in retrieve_with_summary
     _chroma_instance = chroma
     
-    # Retrieve more context for better answers
+    # Smart retrieval with MMR (Maximum Marginal Relevance) for diverse, relevant chunks
     retriever = chroma.as_retriever(
-        search_kwargs={"k": 10},  # Get more chunks for comprehensive context
+        search_type="mmr",  # Use MMR for better diversity and relevance
+        search_kwargs={
+            "k": 12,  # Get more chunks for comprehensive context
+            "fetch_k": 20,  # Fetch more candidates for MMR selection
+            "lambda_mult": 0.7  # Balance between relevance (1.0) and diversity (0.0)
+        },
     )
     
-    # Helper to ensure summary is always included
-    def retrieve_with_summary(question):
-        """Retrieve documents and always include summary if available."""
-        # Get regular retrieval results
-        retrieved_docs = retriever.invoke(question)
+    # Helper to ensure summary is always included and use smart retrieval
+    def retrieve_with_summary(inputs):
+        """
+        Smart retrieval that uses full interview context to improve query understanding.
+        Retrieves documents and always includes summary if available.
+        """
+        # Extract question/transcript from inputs (could be dict or string)
+        if isinstance(inputs, dict):
+            question = inputs.get("transcript", inputs.get("question", ""))
+            full_context = inputs.get("full_interview_context", "")
+        else:
+            question = str(inputs)
+            full_context = ""
+        
+        # Build smarter query: combine current question with context from interview
+        # This helps understand what the interviewer is really asking
+        if full_context and len(full_context) > 50:
+            # Extract key topics from full interview to improve retrieval
+            # Use the current question as primary, but add context
+            smart_query = f"{question} [Context from interview: {full_context[-500:]}]"  # Last 500 chars for context
+        else:
+            smart_query = question
+        
+        # Get retrieval results with smart query
+        retrieved_docs = retriever.invoke(smart_query)
         
         # Try to get summary document if not already in results
         try:
@@ -76,66 +103,123 @@ def build_generator_chain():
         return retrieved_docs
 
     prompt = PromptTemplate(
-        input_variables=["context", "transcript", "chat_history"],
-        template="""You are an expert interview answer assistant helping a candidate respond to interview questions in real-time.
+        input_variables=["context", "transcript", "chat_history", "full_interview_context"],
+        template="""You are an intelligent interview copilot assistant with ChatGPT-level reasoning. You help candidates give perfect, personalized answers during live interviews by understanding the full conversation context and the candidate's complete background.
 
-CANDIDATE'S COMPLETE BACKGROUND (from resume profile and job description):
+=== CANDIDATE'S COMPLETE BACKGROUND ===
 {context}
 
-IMPORTANT: The context above includes a comprehensive RESUME PROFILE section that contains ALL key information:
-- Name, title, years of experience
+This includes a comprehensive RESUME PROFILE with:
+- Personal information (name, contact)
+- Professional summary (title, years of experience, industry)
 - ALL skills and technologies
-- Complete work experience with responsibilities
+- Complete work experience with companies, roles, responsibilities, achievements
 - Education details
 - Projects and achievements
 - Certifications
 
-Use this information extensively and accurately.
+=== FULL INTERVIEW CONVERSATION SO FAR ===
+{full_interview_context}
 
-Previous conversation:
+This is the COMPLETE transcript of everything said in this interview session. Use it to:
+- Understand the conversation flow and context
+- See what topics have been discussed
+- Identify follow-up questions or related topics
+- Maintain consistency with previous answers
+- Understand the interviewer's focus areas
+
+=== RECENT Q&A EXCHANGES ===
 {chat_history}
 
+These are the most recent question-answer pairs. Use them to:
+- Maintain conversational flow
+- Avoid repeating information already shared
+- Build on previous answers naturally
+- Show progression in the conversation
+
+=== CURRENT QUESTION ===
 The interviewer just asked: "{transcript}"
 
-SPECIAL HANDLING FOR "TELL ME ABOUT YOURSELF":
-- If the question is "tell me about yourself", "introduce yourself", "walk me through your background", or similar:
-  * ALWAYS start with "My name is [NAME]" - get the name from the RESUME PROFILE section
-  * Mention current role/title: "I am a [TITLE]" or "I'm currently a [TITLE]" - use the CURRENT_TITLE from profile
-  * Include years of experience: "with [X] years of experience" - use YEARS_OF_EXPERIENCE from profile
-  * Highlight 3-5 most relevant skills/technologies from the KEY SKILLS section
-  * Mention 1-2 key achievements or projects from WORK EXPERIENCE or PROJECTS sections
-  * End with why you're interested in this role (if job description provided)
-  * Keep it to 4-6 sentences, natural and conversational
-  * Example: "My name is [Name from profile] and I'm a [Title from profile] with [X] years of experience. I specialize in [skills from profile] and have [achievement from profile]. I'm particularly excited about this opportunity because [connection to job]."
+=== YOUR TASK ===
+Generate a perfect, personalized answer that:
 
-- For questions about skills/technologies:
-  * Reference the EXACT skills listed in the KEY SKILLS & TECHNOLOGIES section
-  * Mention specific projects or roles where you used those skills from WORK EXPERIENCE
-  * Be specific and accurate
+1. **INTELLIGENT CONTEXT AWARENESS**:
+   - Understand the FULL interview context - what's been discussed, what hasn't
+   - Recognize if this is a follow-up, clarification, or new topic
+   - Maintain consistency with previous answers
+   - Build naturally on the conversation flow
 
-- For questions about experience/projects:
-  * Use details from the WORK EXPERIENCE section
-  * Reference specific companies, roles, and achievements
-  * Mention technologies used from each role
-  * Use information from PROJECTS & ACHIEVEMENTS section
+2. **SMART RESUME INTEGRATION**:
+   - Use SPECIFIC details from the resume profile (names, companies, technologies, achievements)
+   - Connect multiple pieces of information intelligently
+   - Highlight the MOST RELEVANT experiences for THIS specific question
+   - Show how different experiences relate to each other
 
-- For other questions:
-  * ALWAYS use SPECIFIC details from the resume profile
-  * Reference actual projects, roles, companies, or achievements from the context
-  * Connect experience to the question using real information
-  * Keep it concise (2-4 sentences)
+3. **CHATGPT-LEVEL REASONING**:
+   - Think about what the interviewer is REALLY asking (not just surface level)
+   - Consider what makes a strong answer for this type of question
+   - Anticipate what might come next in the conversation
+   - Provide depth while staying concise
 
-CRITICAL RULES:
-• ALWAYS use information from the RESUME PROFILE section - it contains comprehensive details
-• Use SPECIFIC names, companies, technologies, and achievements from the profile
-• NEVER make up or guess information - only use what's explicitly in the context
-• If information is not in the context, say you don't have that information rather than making it up
-• Reference the exact skills, technologies, and experiences listed in the profile
-• Sound natural and conversational, not robotic
-• Show confidence and professionalism
-• Avoid repeating the question back
+4. **NATURAL CONVERSATION**:
+   - Sound like a real person speaking, not reading from a script
+   - Use natural transitions and connectors
+   - Show personality and confidence
+   - Be conversational, not robotic
 
-Provide ONLY the candidate's spoken answer, nothing else.
+=== ANSWER GUIDELINES BY QUESTION TYPE ===
+
+**"Tell me about yourself" / Introduction questions:**
+- Start: "My name is [NAME from profile]"
+- Current role: "I'm a [TITLE] with [X] years of experience"
+- Key strengths: Highlight 3-5 most relevant skills from KEY SKILLS section
+- Notable achievement: Mention 1-2 impressive projects/achievements from WORK EXPERIENCE or PROJECTS
+- Connection to role: Why you're interested (if job description provided)
+- Length: 4-6 sentences, natural flow
+
+**Technical/Skill questions:**
+- Reference EXACT skills from KEY SKILLS & TECHNOLOGIES section
+- Give SPECIFIC examples from WORK EXPERIENCE where you used those skills
+- Mention technologies, projects, or achievements related to the skill
+- Show depth of experience, not just surface knowledge
+
+**Experience/Project questions:**
+- Use SPECIFIC details from WORK EXPERIENCE section
+- Mention company names, roles, technologies used
+- Reference achievements and impact from that role
+- Connect to projects from PROJECTS & ACHIEVEMENTS section
+- Show progression and growth
+
+**Behavioral/Situational questions:**
+- Draw from WORK EXPERIENCE and PROJECTS sections
+- Use specific examples with real details (companies, technologies, outcomes)
+- Show problem-solving, leadership, or other relevant skills
+- Connect to the candidate's actual experiences
+
+**Follow-up or clarification questions:**
+- Reference what was said earlier in the interview (from full_interview_context)
+- Build on previous answers naturally
+- Provide additional detail or clarification
+- Maintain consistency
+
+**General/Other questions:**
+- Use SPECIFIC details from resume profile
+- Connect multiple experiences intelligently
+- Show how experiences relate to the question
+- Keep it concise (2-4 sentences) but substantive
+
+=== CRITICAL RULES ===
+• ALWAYS use SPECIFIC information from the RESUME PROFILE - names, companies, technologies, achievements
+• NEVER make up information - only use what's in the context
+• If information isn't available, acknowledge it professionally rather than guessing
+• Use the FULL INTERVIEW CONTEXT to understand conversation flow and maintain consistency
+• Think like ChatGPT - understand intent, provide intelligent reasoning, show depth
+• Sound natural and conversational - like a confident professional speaking
+• Show how different experiences connect and build on each other
+• Anticipate what makes a strong answer for this specific question type
+
+=== OUTPUT FORMAT ===
+Provide ONLY the candidate's spoken answer, nothing else. Make it ready to speak naturally.
 """,
     )
 
@@ -178,7 +262,7 @@ Provide ONLY the candidate's spoken answer, nothing else.
     def format_chat_history(history):
         """Format chat history for prompt."""
         if not history or len(history) == 0:
-            return "No previous conversation."
+            return "No previous Q&A exchanges."
         
         formatted = []
         for entry in history[-5:]:  # Last 5 exchanges
@@ -186,12 +270,28 @@ Provide ONLY the candidate's spoken answer, nothing else.
                 q = entry.get("question", entry.get("transcript", ""))
                 a = entry.get("answer", "")
                 if q and a:
-                    formatted.append(f"Interviewer: {q}\nCandidate: {a}")
+                    formatted.append(f"Q: {q}\nA: {a}")
             elif isinstance(entry, str):
                 formatted.append(entry)
         
-        result = "\n\n".join(formatted) if formatted else "No previous conversation."
+        result = "\n\n".join(formatted) if formatted else "No previous Q&A exchanges."
         return result
+    
+    # Helper to format full interview context
+    def format_full_interview_context(context):
+        """Format the full interview transcript for context."""
+        if not context or not context.strip():
+            return "This is the beginning of the interview."
+        
+        # Clean up and format the full transcript
+        cleaned = context.strip()
+        # Limit to last 2000 words to avoid token limits while keeping recent context
+        words = cleaned.split()
+        if len(words) > 2000:
+            cleaned = " ".join(words[-2000:])
+            return f"[Earlier conversation truncated. Recent conversation:]\n\n{cleaned}"
+        
+        return cleaned
     
     # Helper to safely get chat history
     def get_chat_history_safe(inputs):
@@ -200,13 +300,26 @@ Provide ONLY the candidate's spoken answer, nothing else.
             return inputs.get("chat_history", [])
         return []
     
-    # Build retrieval-augmented chain with chat history
+    # Helper to safely get full interview context
+    def get_full_interview_context_safe(inputs):
+        """Safely extract full_interview_context from inputs."""
+        if isinstance(inputs, dict):
+            return inputs.get("full_interview_context", "")
+        return ""
+    
+    # Build retrieval-augmented chain with chat history and full interview context
+    # Pass full inputs to retrieve_with_summary so it can use interview context
+    def prepare_retrieval_inputs(inputs):
+        """Prepare inputs for smart retrieval that uses full interview context."""
+        return inputs  # Pass through full inputs dict
+    
     base_chain = (
         RunnableMap(
             {
-                "context": itemgetter("transcript") | RunnableLambda(retrieve_with_summary) | RunnableLambda(format_context),
+                "context": RunnableLambda(prepare_retrieval_inputs) | RunnableLambda(retrieve_with_summary) | RunnableLambda(format_context),
                 "transcript": itemgetter("transcript"),
                 "chat_history": RunnableLambda(get_chat_history_safe) | RunnableLambda(format_chat_history),
+                "full_interview_context": RunnableLambda(get_full_interview_context_safe) | RunnableLambda(format_full_interview_context),
             }
         )
         | prompt

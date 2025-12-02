@@ -506,10 +506,11 @@ class CaptionWindow(QWidget):
         self.current_answer = ""
         self.current_question = transcript  # Store current question for chat history
         
-        # Start streaming in background thread with chat history
+        # Start streaming in background thread with chat history and full interview context
+        full_context = self.full_transcript or self.reconciled_text or ""
         threading.Thread(
             target=self._stream_answer_background,
-            args=(transcript, self.chat_history.copy()),  # Pass copy of chat history
+            args=(transcript, self.chat_history.copy(), full_context),  # Pass chat history and full context
             daemon=True
         ).start()
         
@@ -517,7 +518,7 @@ class CaptionWindow(QWidget):
         if not self.answer_timer.isActive():
             self.answer_timer.start()
     
-    def _stream_answer_background(self, transcript: str, chat_history: list):
+    def _stream_answer_background(self, transcript: str, chat_history: list, full_interview_context: str = ""):
         """Background thread for streaming answer from API."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -525,7 +526,7 @@ class CaptionWindow(QWidget):
         try:
             async def stream():
                 try:
-                    async for chunk in self.api.stream_answer(transcript, chat_history):
+                    async for chunk in self.api.stream_answer(transcript, chat_history, full_interview_context):
                         if chunk:
                             self.answer_queue.put(chunk)
                             logging.debug(f"📥 Received chunk: {chunk[:50]}...")

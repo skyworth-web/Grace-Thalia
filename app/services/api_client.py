@@ -32,14 +32,17 @@ class APIClient:
             self.logger.error(f"Generate error: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def stream_answer(self, transcript, chat_history=None):
+    async def stream_answer(self, transcript, chat_history=None, full_interview_context=None):
         """Stream the answer from backend as the response is being generated"""
         if chat_history is None:
             chat_history = []
+        if full_interview_context is None:
+            full_interview_context = ""
         
         payload = {
             "transcript": transcript,
-            "chat_history": chat_history
+            "chat_history": chat_history,
+            "full_interview_context": full_interview_context  # Full interview transcript for context
         }
         
         async with aiohttp.ClientSession() as session:

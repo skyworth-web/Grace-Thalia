@@ -146,6 +146,7 @@ async def generate_stream(payload: dict):
     global generator_chain
     transcript = payload.get("transcript", "").strip()
     chat_history = payload.get("chat_history", [])  # Get chat history from payload
+    full_interview_context = payload.get("full_interview_context", "")  # Get full interview transcript
 
     if generator_chain is None:
         return StreamingResponse(
@@ -158,11 +159,13 @@ async def generate_stream(payload: dict):
             try:
                 logger.info(f"🔄 Generating streaming answer for: {transcript[:100]}...")
                 logger.debug(f"📜 Chat history: {len(chat_history)} previous exchanges")
+                logger.debug(f"📝 Full interview context: {len(full_interview_context)} chars")
                 
-                # Invoke the chain with transcript and chat history
+                # Invoke the chain with transcript, chat history, and full interview context
                 result = generator_chain.invoke({
                     "transcript": transcript,
-                    "chat_history": chat_history
+                    "chat_history": chat_history,
+                    "full_interview_context": full_interview_context or ""  # Full interview transcript
                 })
                 answer = result.get("answer") or result.get("text") or ""
                 
