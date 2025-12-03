@@ -47,7 +47,7 @@ class APIClient:
         
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.post(f"{BACKEND_URL}/generate-stream", json=payload) as resp:
+                async with session.post(f"{BACKEND_URL}/generate/stream", json=payload) as resp:
                     resp.raise_for_status()  # Check for errors
                     async for chunk in resp.content.iter_chunked(32):
                         decoded = chunk.decode('utf-8', errors='ignore')
