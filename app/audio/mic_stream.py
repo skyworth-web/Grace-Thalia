@@ -639,19 +639,8 @@ class MicStream:
                     if text:
                         logging.info(f"📝 Transcript received (reconciled): {text[:50]}...")
                         # Backend handles reconciliation, so we just pass it through
-                        # Store full transcript for later use
-                        if full_transcript:
-                            # Store in a way that can be accessed by callback
-                            # We'll pass it as part of the text or separately
-                            # For now, pass as tuple if callback supports it
-                            try:
-                                # Try passing as tuple first
-                                self.callback((text, full_transcript))
-                            except TypeError:
-                                # Fallback: just pass text, full_transcript will be in next call
-                                self.callback(text)
-                        else:
-                            self.callback(text)
+                        # Call callback with separate arguments (text, full_transcript)
+                        self.callback(text, full_transcript if full_transcript else None)
                         logging.debug(f"✅ Callback executed successfully")
                     else:
                         logging.debug("⚠️ Empty transcript received from STT (no speech detected)")

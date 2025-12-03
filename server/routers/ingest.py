@@ -39,7 +39,7 @@ async def ingest(payload: IngestPayload):
             f.write(payload.resume)
 
         with open(job_path, "w", encoding="utf-8") as f:
-            f.write(payload.job)
+            f.write(payload.job or "")
 
         # Ingest into vector store
         ingest_docs()
