@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from config import client
+import config
 from services.stt_service import transcribe_audio
 from services.transcript_reconciliation import add_transcript, clear_buffer
 from chains.retrieval_chain import append_transcript_chunk
@@ -23,7 +23,7 @@ stt_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="STT")
 @router.post("")
 async def stt(file: UploadFile = File(...)):
     """STT endpoint with backend reconciliation."""
-    if client is None:
+    if config.client is None:
         return JSONResponse(
             status_code=400,
             content={"transcript": "", "error": "OpenAI client not initialized. Set OPENAI_API_KEY."}
@@ -36,7 +36,7 @@ async def stt(file: UploadFile = File(...)):
         result = await loop.run_in_executor(
             stt_executor,
             transcribe_audio,
-            client,
+            config.client,
             audio_bytes,
             file.filename,
             file.content_type
