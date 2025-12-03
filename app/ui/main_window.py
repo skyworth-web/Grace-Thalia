@@ -53,11 +53,11 @@ class MainWindow(QWidget):
         # Initialize UI
         self.init_ui()
     
-    def _on_transcript_received(self, text: str):
+    def _on_transcript_received(self, text: str, full_transcript: str = None):
         """Called from worker thread when transcript is received."""
         if text and text.strip():
-            # Add to queue
-            self.transcript_queue.put(text.strip())
+            # Add to queue as tuple (text, full_transcript)
+            self.transcript_queue.put((text.strip(), full_transcript.strip() if full_transcript else None))
             logging.info(f"📥 Queued transcript: {text[:50]}...")
             # Start timer to process queue (safe to call from any thread via singleShot)
             if not self.transcript_timer.isActive():
@@ -116,14 +116,21 @@ class MainWindow(QWidget):
             # Collect all texts first
             while True:
                 try:
-                    text = self.transcript_queue.get_nowait()
-                    texts_to_process.append(text)
+                    item = self.transcript_queue.get_nowait()
+                    texts_to_process.append(item)
                 except:
                     break
             
             # Process them all - this ensures we're on GUI thread
-            for text in texts_to_process:
+            for item in texts_to_process:
                 try:
+                    # Unpack tuple (text, full_transcript) or handle string
+                    if isinstance(item, tuple):
+                        text, full_transcript = item
+                    else:
+                        text = item
+                        full_transcript = None
+                    
                     # Filter out false positives and hallucinations
                     if self._should_filter_transcript(text):
                         filtered_count += 1
@@ -131,7 +138,7 @@ class MainWindow(QWidget):
                     
                     logging.info(f"📤 Processing transcript: {text[:50]}...")
                     # Directly update caption window (we're on GUI thread)
-                    self.caption_window.update_caption(text)
+                    self.caption_window.update_caption(text, full_transcript)
                     processed_count += 1
                 except Exception as e:
                     logging.error(f"❌ Error processing transcript '{text[:50]}...': {e}", exc_info=True)

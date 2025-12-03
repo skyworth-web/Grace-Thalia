@@ -623,36 +623,36 @@ class MicStream:
                         return
 
                     json_data = response.json()
-                    text = json_data.get("transcript", "").strip()
+                    text = json_data.get("transcript", "").strip()  # Backend-reconciled display text
+                    full_transcript = json_data.get("full_transcript", "").strip()  # Full reconciled transcript
                     error_msg = json_data.get("error", "")
-
+                    is_duplicate = json_data.get("is_duplicate", False)
+                    
                     if error_msg:
                         logging.error(f"❌ STT error from backend: {error_msg}")
                         return
-
+                    
+                    if is_duplicate:
+                        logging.debug(f"🚫 Backend detected duplicate, skipping")
+                        return
+                    
                     if text:
-                        logging.info(f"📝 Transcript received: {text}")
-                        # Store transcript with timestamp and chunk ID for reconciliation
-                        current_time = time.time()
-                        chunk_id = self.chunk_counter
-                        self.chunk_counter += 1
-                        
-                        with self.transcript_lock:
-                            # Add to recent transcripts (keep last 5)
-                            self.recent_transcripts.append((current_time, text, chunk_id))
-                            if len(self.recent_transcripts) > 5:
-                                self.recent_transcripts.pop(0)
-                            
-                            # Reconcile transcripts - merge overlapping content
-                            reconciled_text = self._reconcile_transcripts()
-                        
-                        # IMPORTANT: this callback will be a Qt signal emitter,
-                        # so calling it from this thread is SAFE.
-                        try:
-                            self.callback(reconciled_text)
-                            logging.debug(f"✅ Callback executed successfully")
-                        except Exception as cb_err:
-                            logging.error(f"❌ Error in callback: {cb_err}", exc_info=True)
+                        logging.info(f"📝 Transcript received (reconciled): {text[:50]}...")
+                        # Backend handles reconciliation, so we just pass it through
+                        # Store full transcript for later use
+                        if full_transcript:
+                            # Store in a way that can be accessed by callback
+                            # We'll pass it as part of the text or separately
+                            # For now, pass as tuple if callback supports it
+                            try:
+                                # Try passing as tuple first
+                                self.callback((text, full_transcript))
+                            except TypeError:
+                                # Fallback: just pass text, full_transcript will be in next call
+                                self.callback(text)
+                        else:
+                            self.callback(text)
+                        logging.debug(f"✅ Callback executed successfully")
                     else:
                         logging.debug("⚠️ Empty transcript received from STT (no speech detected)")
                     

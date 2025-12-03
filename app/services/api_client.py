@@ -67,3 +67,13 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             self.logger.error(f"STT error: {e}")
             return {"transcript": "", "error": str(e)}
+    
+    def clear_transcripts(self):
+        """Clear the transcript buffer on the backend"""
+        try:
+            r = self.session.post(f"{BACKEND_URL}/stt/clear")
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"Clear transcripts error: {e}")
+            return {"status": "error", "message": str(e)}
