@@ -1,6 +1,6 @@
 # server/routers/stt.py
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, UploadFile, BackgroundTasks
 from fastapi.responses import JSONResponse
 import asyncio
 import logging
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import config
 from services.stt_service import transcribe_audio
 from services.transcript_reconciliation import add_transcript, clear_buffer
-from chains.retrieval_chain import append_transcript_chunk
+from chains.retrieval_chain import append_transcript_chunk_async
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,8 @@ router = APIRouter(prefix="/stt", tags=["stt"])
 
 # STT executor for async transcription
 stt_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="STT")
+# Vector DB executor for non-blocking operations
+vector_db_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="VectorDB")
 
 
 @router.post("")
@@ -50,12 +52,15 @@ async def stt(file: UploadFile = File(...)):
             
             logger.info(f"📝 STT transcript: {raw_text[:50]}...")
             
-            # Store in vector DB (use full reconciled text for better context)
+            # Store in vector DB asynchronously (non-blocking) for better performance
+            # This doesn't block the STT response, improving latency
             if full_transcript:
-                append_transcript_chunk(
-                    text=full_transcript,  # Store full reconciled text
-                    speaker="unknown",
-                    timestamp=str(datetime.now())
+                loop.run_in_executor(
+                    vector_db_executor,
+                    append_transcript_chunk_async,
+                    full_transcript,
+                    "unknown",
+                    str(datetime.now())
                 )
             
             return {

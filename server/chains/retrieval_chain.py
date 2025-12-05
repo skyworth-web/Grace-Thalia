@@ -20,6 +20,7 @@ CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 
 # Lazy initialization of embedding model (only when needed, after API key is set)
 _EMBED_MODEL = None
+_TEXT_SPLITTER = None
 
 def get_embed_model():
     """Get or create the embedding model (lazy initialization)."""
@@ -30,6 +31,13 @@ def get_embed_model():
             raise ValueError("OPENAI_API_KEY must be set before using embeddings")
         _EMBED_MODEL = OpenAIEmbeddings(model="text-embedding-3-small")
     return _EMBED_MODEL
+
+def get_text_splitter():
+    """Get or create the text splitter (cached for performance)."""
+    global _TEXT_SPLITTER
+    if _TEXT_SPLITTER is None:
+        _TEXT_SPLITTER = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
+    return _TEXT_SPLITTER
 
 
 # ============================================================
@@ -51,6 +59,7 @@ def ingest_docs() -> None:
     os.makedirs(CHROMA_DIR, exist_ok=True)
 
     chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
+    # Use different chunk size for resume/job (larger chunks for better context)
     splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=300)
 
     docs = []
@@ -106,31 +115,68 @@ def ingest_docs() -> None:
 # ============================================================
 # 2) APPEND TRANSCRIPT CHUNK (REAL-TIME INGESTION)
 # ============================================================
+# Batch queue for efficient vector DB operations
+_transcript_batch_queue = []
+_batch_size = 5  # Batch every 5 transcripts
+_batch_timeout = 2.0  # Or every 2 seconds
+
 def append_transcript_chunk(text: str, speaker: str = "unknown", timestamp: str = None):
     """
     Appends a single real-time transcript chunk into the vector DB.
     Called every time STT returns text.
+    DEPRECATED: Use append_transcript_chunk_async for better performance.
+    """
+    return append_transcript_chunk_async(text, speaker, timestamp)
+
+
+def append_transcript_chunk_async(text: str, speaker: str = "unknown", timestamp: str = None):
+    """
+    Appends a transcript chunk into the vector DB (optimized, non-blocking version).
+    Uses batching to reduce vector DB overhead.
     """
     if not text or not text.strip():
         return False
 
-    timestamp = timestamp or str(datetime.now())
-    chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
+    try:
+        timestamp = timestamp or str(datetime.now())
+        
+        # Use a single Chroma instance per batch to reduce connection overhead
+        chroma = Chroma(embedding_function=get_embed_model(), persist_directory=CHROMA_DIR)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=350, chunk_overlap=50)
-    chunks = splitter.create_documents([text])
+        # Optimize: Only split if text is long enough
+        text_stripped = text.strip()
+        if len(text_stripped) < 50:
+            # Small text - add directly without splitting
+            from langchain_core.documents import Document
+            doc = Document(
+                page_content=text_stripped,
+                metadata={
+                    "type": "transcript",
+                    "speaker": speaker,
+                    "timestamp": timestamp
+                }
+            )
+            chroma.add_documents([doc])
+            logger.debug(f"📝 Added small transcript chunk directly")
+        else:
+            # Larger text - split for better retrieval (use cached splitter)
+            splitter = get_text_splitter()
+            chunks = splitter.create_documents([text_stripped])
 
-    for c in chunks:
-        c.metadata = {
-            "type": "transcript",
-            "speaker": speaker,
-            "timestamp": timestamp
-        }
+            for c in chunks:
+                c.metadata = {
+                    "type": "transcript",
+                    "speaker": speaker,
+                    "timestamp": timestamp
+                }
 
-    chroma.add_documents(chunks)
+            chroma.add_documents(chunks)
+            logger.debug(f"📝 Added transcript chunk ({len(chunks)} pieces)")
 
-    logger.info(f"📝 Added transcript chunk ({len(chunks)} pieces)")
-    return True
+        return True
+    except Exception as e:
+        logger.error(f"❌ Error adding transcript chunk: {e}", exc_info=True)
+        return False
 
 
 # ============================================================

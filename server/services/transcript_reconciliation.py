@@ -6,9 +6,9 @@ from collections import deque
 from typing import Tuple, List
 
 # Transcript buffer for reconciliation (session-based)
-_transcript_buffer = deque(maxlen=50)  # Keep last 50 transcripts
+_transcript_buffer = deque(maxlen=500)  # Keep last 500 transcripts (increased for full conversations)
 _reconciled_text = ""  # Current reconciled transcript
-_buffer_window = 3.0  # 3 seconds window for reconciliation
+_buffer_window = 300.0  # 5 minutes window for reconciliation (increased for full conversation history)
 
 
 def _normalize_text(text: str) -> str:
@@ -24,12 +24,27 @@ def _normalize_word(word: str) -> str:
 
 
 def _find_best_overlap(existing_words: list, new_words: list) -> int:
-    """Find the best overlap point between existing and new words."""
+    """Find the best overlap point between existing and new words (optimized)."""
     if not existing_words or not new_words:
         return 0
     
-    max_overlap = min(len(existing_words), len(new_words), 12)
+    # Optimize: check shorter window first, then expand if needed
+    max_overlap = min(len(existing_words), len(new_words), 20)  # Increased from 12 to 20
     
+    # Quick check: if last word matches first word, likely continuation
+    if len(existing_words) > 0 and len(new_words) > 0:
+        if _normalize_word(existing_words[-1]) == _normalize_word(new_words[0]):
+            # Check a few more words for confidence
+            check_len = min(5, max_overlap)
+            existing_suffix = existing_words[-check_len:]
+            new_prefix = new_words[:check_len]
+            existing_normalized = [_normalize_word(w) for w in existing_suffix]
+            new_normalized = [_normalize_word(w) for w in new_prefix]
+            matches = sum(1 for e, n in zip(existing_normalized, new_normalized) if e == n)
+            if matches >= check_len * 0.7:
+                return check_len
+    
+    # Full search with early exit optimization
     for overlap_len in range(max_overlap, 0, -1):
         existing_suffix = existing_words[-overlap_len:]
         new_prefix = new_words[:overlap_len]
@@ -40,7 +55,7 @@ def _find_best_overlap(existing_words: list, new_words: list) -> int:
         matches = sum(1 for e, n in zip(existing_normalized, new_normalized) if e == n)
         match_ratio = matches / overlap_len if overlap_len > 0 else 0
         
-        if match_ratio >= 0.8:
+        if match_ratio >= 0.75:  # Slightly lower threshold for better merging
             return overlap_len
     
     return 0
@@ -50,6 +65,7 @@ def _reconcile_transcripts() -> Tuple[str, str]:
     """
     Reconcile overlapping transcripts and return clean text.
     Returns: (display_text, full_transcript)
+    Optimized: Keeps full conversation history, not just time window.
     """
     global _reconciled_text
     
@@ -57,11 +73,10 @@ def _reconcile_transcripts() -> Tuple[str, str]:
         _reconciled_text = ""
         return "", ""
     
-    current_time = time.time()
-    cutoff_time = current_time - _buffer_window
-    
-    # Clean old transcripts
-    valid_transcripts = [(ts, txt) for ts, txt in _transcript_buffer if ts >= cutoff_time]
+    # Use all transcripts in buffer (full conversation history)
+    # The deque maxlen already limits the buffer size, so we don't need time-based filtering
+    # This ensures users see the entire conversation, not just recent parts
+    valid_transcripts = list(_transcript_buffer)
     
     if not valid_transcripts:
         _reconciled_text = ""
@@ -111,33 +126,34 @@ def _reconcile_transcripts() -> Tuple[str, str]:
             else:
                 reconciled_words.extend(words)
     
-    # Remove duplicates: filter out repeated phrases
-    if len(reconciled_words) > 0:
-        # Check for repeated sequences
-        final_words = []
+    # Optimized duplicate removal: only check recent words to avoid removing valid repetitions
+    if len(reconciled_words) > 100:
+        # Only check last 50 words for duplicates to avoid removing valid conversation repetitions
+        recent_words = reconciled_words[-50:]
+        older_words = reconciled_words[:-50]
+        
+        final_recent = []
         seen_phrases = set()
         
-        for i in range(len(reconciled_words)):
-            # Check if this word starts a repeated phrase
-            phrase_len = min(5, len(reconciled_words) - i)
+        for i in range(len(recent_words)):
+            phrase_len = min(5, len(recent_words) - i)
             if phrase_len > 0:
-                phrase = " ".join(reconciled_words[i:i+phrase_len]).lower()
+                phrase = " ".join(recent_words[i:i+phrase_len]).lower()
                 if phrase not in seen_phrases:
-                    final_words.append(reconciled_words[i])
+                    final_recent.append(recent_words[i])
                     seen_phrases.add(phrase)
                 else:
-                    # Skip this word if it's part of a repeated phrase
                     continue
             else:
-                final_words.append(reconciled_words[i])
+                final_recent.append(recent_words[i])
         
-        reconciled_words = final_words
+        reconciled_words = older_words + final_recent
     
     _reconciled_text = " ".join(reconciled_words)
     
-    # Return last 60 words for display
-    display_words = reconciled_words[-60:] if len(reconciled_words) > 60 else reconciled_words
-    display_text = " ".join(display_words)
+    # Return full reconciled text for display (no truncation)
+    # This allows users to see the entire conversation context
+    display_text = _reconciled_text
     
     return display_text, _reconciled_text
 
