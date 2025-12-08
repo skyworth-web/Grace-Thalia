@@ -16,6 +16,21 @@ import os
 import logging
 import time
 
+# PDF text extraction
+PDF_SUPPORT = False
+PDF_LIBRARY = None
+try:
+    import PyPDF2
+    PDF_SUPPORT = True
+    PDF_LIBRARY = "PyPDF2"
+except ImportError:
+    try:
+        import pdfplumber
+        PDF_SUPPORT = True
+        PDF_LIBRARY = "pdfplumber"
+    except ImportError:
+        logging.warning("⚠️ No PDF library found. Install PyPDF2 or pdfplumber: pip install PyPDF2")
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -254,19 +269,102 @@ class MainWindow(QWidget):
             self.resume_path.setText(os.path.basename(file_path))
             self.resume_file_path = file_path
 
+    def _extract_text_from_pdf(self, file_path: str) -> str:
+        """Extract text from PDF file."""
+        if not PDF_SUPPORT:
+            return None
+        
+        try:
+            text = ""
+            if PDF_LIBRARY == "PyPDF2":
+                # Use PyPDF2
+                with open(file_path, 'rb') as file:
+                    pdf_reader = PyPDF2.PdfReader(file)
+                    for page in pdf_reader.pages:
+                        text += page.extract_text() + "\n"
+            elif PDF_LIBRARY == "pdfplumber":
+                # Use pdfplumber
+                import pdfplumber
+                with pdfplumber.open(file_path) as pdf:
+                    for page in pdf.pages:
+                        text += page.extract_text() + "\n"
+            
+            return text.strip() if text.strip() else None
+        except Exception as e:
+            logging.error(f"❌ Error extracting text from PDF: {e}", exc_info=True)
+            return None
+    
+    def _extract_text_from_doc(self, file_path: str) -> str:
+        """Extract text from DOC/DOCX file."""
+        try:
+            # Try python-docx for .docx files
+            if file_path.lower().endswith('.docx'):
+                try:
+                    from docx import Document
+                    doc = Document(file_path)
+                    text = "\n".join([para.text for para in doc.paragraphs])
+                    return text.strip() if text.strip() else None
+                except ImportError:
+                    logging.warning("⚠️ python-docx not installed. Install: pip install python-docx")
+                    return None
+            else:
+                # .doc files need antiword or similar - skip for now
+                logging.warning("⚠️ .doc files not supported. Please convert to .docx or .pdf")
+                return None
+        except Exception as e:
+            logging.error(f"❌ Error extracting text from DOC: {e}", exc_info=True)
+            return None
+
     def ingest(self):
         try:
-            resume = getattr(self, "resume_file_path", None)
-            if not resume:
+            resume_path = getattr(self, "resume_file_path", None)
+            if not resume_path:
                 self.answer_box.setText("⚠️ Please upload a resume file.")
                 return
 
+            # Extract text from PDF/DOC file
+            logging.info(f"📄 Extracting text from: {resume_path}")
+            resume_text = None
+            
+            if resume_path.lower().endswith('.pdf'):
+                resume_text = self._extract_text_from_pdf(resume_path)
+            elif resume_path.lower().endswith(('.doc', '.docx')):
+                resume_text = self._extract_text_from_doc(resume_path)
+            else:
+                # Assume it's already text
+                try:
+                    with open(resume_path, 'r', encoding='utf-8') as f:
+                        resume_text = f.read()
+                except:
+                    resume_text = None
+
+            if not resume_text:
+                self.answer_box.setText(
+                    "❌ Error: Could not extract text from resume file.\n\n"
+                    "Please ensure:\n"
+                    "1. The file is a valid PDF or DOCX\n"
+                    "2. Install PDF library: pip install PyPDF2\n"
+                    "3. For DOCX: pip install python-docx"
+                )
+                logging.error(f"❌ Failed to extract text from: {resume_path}")
+                return
+
+            logging.info(f"✅ Extracted {len(resume_text)} characters from resume")
+            self.answer_box.setText(f"⏳ Uploading resume ({len(resume_text)} chars)...")
+
             jd = self.jd_box.toPlainText() or None
 
-            response = self.api.ingest(resume, jd)
-            self.answer_box.setText(str(response))
+            # Send the extracted text, not the file path
+            response = self.api.ingest(resume_text, jd)
+            
+            if response.get("status") == "ok":
+                self.answer_box.setText(f"✅ {response.get('message', 'Resume uploaded successfully!')}")
+            else:
+                self.answer_box.setText(f"❌ Error: {response.get('message', 'Unknown error')}")
+                
         except Exception as e:
-            self.answer_box.setText(f"⚠️ Error: {str(e)}")
+            logging.error(f"❌ Ingest error: {e}", exc_info=True)
+            self.answer_box.setText(f"❌ Error: {str(e)}")
 
     def start_captions(self):
         self.caption_window.show()
