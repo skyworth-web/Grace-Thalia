@@ -133,6 +133,23 @@ def build_generator_chain():
             meta = d.metadata.get("type", "unknown")
             parts.append(f"[{meta}] {d.page_content}")
         return "\n\n".join(parts)
+    
+    def format_chat_history(chat_history):
+        """Format chat history for the prompt."""
+        if not chat_history:
+            logger.info("💭 No chat history - this is the first question")
+            return "No previous conversation."
+        
+        logger.info(f"💭 Formatting {len(chat_history)} previous conversation exchanges")
+        formatted = []
+        for i, exchange in enumerate(chat_history, 1):
+            question = exchange.get("question", "")
+            answer = exchange.get("answer", "")
+            formatted.append(f"Q{i}: {question}\nA{i}: {answer}")
+        
+        result = "\n\n".join(formatted)
+        logger.debug(f"💭 Chat history formatted ({len(result)} chars)")
+        return result
 
     # ============================================================
     # PROMPT TEMPLATE (clean + transcript-first)
@@ -195,6 +212,11 @@ Use this to avoid repeating mistakes and improve consistency:
 "{transcript}"
 
 ====================================================
+💭 **PREVIOUS CONVERSATION (CHAT HISTORY):**
+Use this to maintain context and avoid repetition. Reference previous answers naturally.
+{chat_history}
+
+====================================================
 📝 **FULL INTERVIEW CONTEXT:**  
 (Use lightly — avoid repetition)
 {full_interview_context}
@@ -216,11 +238,23 @@ CRITICAL RULES - READ CAREFULLY:
 10. If you don't see specific info in the resume, say what you DO see, don't use placeholders
 11. Sound human, not scripted.
 
-EXAMPLE OF BAD ANSWER (DO NOT DO THIS):
-"I'm [Name], and I have a strong background in [your field], having worked at [Company Name]..."
+🚨 **IMPORTANT: WHEN TO INTRODUCE YOURSELF:**
+- ONLY introduce yourself ("I'm [Name]...") if:
+  * This is the FIRST question in the conversation (chat_history is empty)
+  * The interviewer explicitly asks "Tell me about yourself" or "Introduce yourself"
+  * The interviewer asks "Who are you?" or similar introduction questions
+- DO NOT introduce yourself on every question - it sounds repetitive and unnatural
+- If you've already introduced yourself, just answer the question directly
+- Build on previous answers naturally - reference what you said before when relevant
 
-EXAMPLE OF GOOD ANSWER (DO THIS):
-"I'm Eduard Mojar, and I have 5 years of experience in software engineering, having worked at TechCorp where I developed web applications using Python and React. I've led a team of 3 developers and delivered projects that increased user engagement by 40%."
+EXAMPLE OF BAD ANSWERS (DO NOT DO THIS):
+1. "I'm [Name], and I have a strong background in [your field], having worked at [Company Name]..." (placeholders)
+2. "I'm Eduard Mojar, and I have 5 years of experience..." (introducing on every question - repetitive)
+
+EXAMPLE OF GOOD ANSWERS (DO THIS):
+1. FIRST QUESTION: "I'm Eduard Mojar, and I have 5 years of experience in software engineering, having worked at TechCorp where I developed web applications using Python and React. I've led a team of 3 developers and delivered projects that increased user engagement by 40%."
+2. FOLLOW-UP QUESTIONS: "At TechCorp, I primarily worked on the payment processing system using Django and PostgreSQL. We reduced transaction processing time by 60% through database optimization." (No introduction - just answer directly)
+3. REFERENCING PREVIOUS ANSWER: "As I mentioned, I worked with Python and React at TechCorp. I also used those technologies in my previous role at StartupXYZ where I built a real-time analytics dashboard."
 
 Now produce ONLY the candidate's spoken answer using ACTUAL resume details:
 """,
@@ -237,7 +271,7 @@ Now produce ONLY the candidate's spoken answer using ACTUAL resume details:
             "resume_context": RunnableLambda(retrieve_resume) | RunnableLambda(format_docs),  # Supplementary chunks
             "summary_context": RunnableLambda(retrieve_summary) | RunnableLambda(format_docs),
             "transcript": itemgetter("transcript"),
-            "chat_history": itemgetter("chat_history"),
+            "chat_history": itemgetter("chat_history") | RunnableLambda(format_chat_history),  # Format chat history
             "full_interview_context": itemgetter("full_interview_context"),
         })
         | prompt
