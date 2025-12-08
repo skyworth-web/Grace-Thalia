@@ -16,6 +16,21 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 
 
+def _load_full_resume() -> str:
+    """Load the full resume text from file (1-2 pages, perfect for full context)."""
+    resume_path = os.path.join(DATA_DIR, "resume.txt")
+    if os.path.exists(resume_path):
+        try:
+            with open(resume_path, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+            if text:
+                logger.info(f"📄 Loaded full resume ({len(text)} chars)")
+                return text
+        except Exception as e:
+            logger.warning(f"⚠ Could not load full resume: {e}")
+    return ""
+
+
 # ============================================================
 # Build Unified Generator Chain (Transcript + Resume RAG)
 # ============================================================
@@ -72,10 +87,16 @@ def build_generator_chain():
         return docs
 
     def retrieve_resume(inputs):
+        # Still retrieve relevant chunks for additional context, but we'll use full resume as primary
         q = inputs.get("transcript", "")
         docs = resume_retriever.invoke(q)
-        logger.info(f"📄 Retrieved {len(docs)} resume chunks")
+        logger.info(f"📄 Retrieved {len(docs)} resume chunks (supplementary)")
         return docs
+    
+    def get_full_resume(inputs):
+        # Load full resume text - this is the PRIMARY source for resume info
+        full_resume = _load_full_resume()
+        return full_resume
 
     def retrieve_summary(inputs):
         try:
@@ -99,6 +120,7 @@ def build_generator_chain():
     prompt = PromptTemplate(
         input_variables=[
             "transcript_context",
+            "full_resume_text",
             "resume_context",
             "summary_context",
             "transcript",
@@ -110,13 +132,22 @@ You are an advanced INTERVIEW COPILOT.
 Your job is to produce a natural, spoken answer for the candidate.
 
 ====================================================
+📄 **COMPLETE RESUME (FULL TEXT - PRIMARY SOURCE)**  
+THIS IS THE CANDIDATE'S COMPLETE RESUME. Study it carefully and use it as the PRIMARY source for all resume-related questions.
+Use specific details from this resume - names, companies, technologies, projects, achievements.
+NEVER use placeholder text like "[your field]" or "[mention key responsibilities]".
+ALWAYS use actual information from this resume:
+
+{full_resume_text}
+
+====================================================
 🎙 **CONVERSATION HISTORY (Transcript-Based Context)**  
 Use this FIRST and MOST IMPORTANT when answering:
 {transcript_context}
 
 ====================================================
-📄 **RESUME / EXPERIENCE CONTEXT**  
-Use this when question relates to skills, tech, experience:
+📄 **SUPPLEMENTARY RESUME CHUNKS (If needed for additional context)**  
+These are semantic search results - use only if full resume above doesn't cover something:
 {resume_context}
 
 ====================================================
@@ -143,11 +174,12 @@ RULES:
 - Use FIRST PERSON ("I", "my experience…")
 - DO NOT repeat the interviewer's question.
 - Ground answer in transcript FIRST.
-- Use resume context only when relevant.
-- Never fabricate resume details.
+- ALWAYS use ACTUAL details from the complete resume above.
+- NEVER use placeholder text or generic statements.
+- Use specific: company names, technologies, project names, achievements from the resume.
 - Sound human, not scripted.
 
-Now produce ONLY the candidate’s spoken answer:
+Now produce ONLY the candidate's spoken answer:
 """,
     )
 
@@ -158,7 +190,8 @@ Now produce ONLY the candidate’s spoken answer:
     chain = (
         RunnableMap({
             "transcript_context": RunnableLambda(retrieve_transcript) | RunnableLambda(format_docs),
-            "resume_context": RunnableLambda(retrieve_resume) | RunnableLambda(format_docs),
+            "full_resume_text": RunnableLambda(get_full_resume),  # Full resume as primary source
+            "resume_context": RunnableLambda(retrieve_resume) | RunnableLambda(format_docs),  # Supplementary chunks
             "summary_context": RunnableLambda(retrieve_summary) | RunnableLambda(format_docs),
             "transcript": itemgetter("transcript"),
             "chat_history": itemgetter("chat_history"),
@@ -178,17 +211,46 @@ Now produce ONLY the candidate’s spoken answer:
 # SIMPLE FALLBACK CHAIN
 # ============================================================
 def _build_simple_chain():
-    logger.warning("⚠ Using fallback generator (no RAG).")
+    logger.warning("⚠ Using fallback generator (no RAG, but will use full resume if available).")
     llm = ChatOpenAI(model="gpt-4o", temperature=0.3, streaming=True)
 
-    prompt = PromptTemplate(
-        input_variables=["transcript"],
-        template="""
-The interviewer said: "{transcript}"
+    def get_resume_for_fallback(inputs):
+        full_resume = _load_full_resume()
+        return full_resume if full_resume else "No resume available."
 
-Give a natural, confident 2–4 sentence spoken answer.
+    prompt = PromptTemplate(
+        input_variables=["transcript", "full_resume_text"],
+        template="""
+You are an interview copilot. Generate a natural, confident 2–4 sentence spoken answer.
+
+====================================================
+📄 **CANDIDATE'S COMPLETE RESUME:**
+{full_resume_text}
+
+====================================================
+💬 **INTERVIEWER'S QUESTION:**
+"{transcript}"
+
+====================================================
+### TASK
+Generate an answer the candidate should SAY OUT LOUD using:
+- ACTUAL details from the resume above (names, companies, technologies, projects)
+- NEVER use placeholder text like "[your field]" or generic statements
+- Use FIRST PERSON ("I", "my experience…")
+- Be specific and confident
+
+Answer:
 """,
     )
 
-    base = prompt | llm | StrOutputParser()
-    return base | RunnableLambda(lambda x: {"answer": x})
+    chain = (
+        RunnableMap({
+            "transcript": itemgetter("transcript"),
+            "full_resume_text": RunnableLambda(get_resume_for_fallback),
+        })
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
+    
+    return chain | RunnableLambda(lambda x: {"answer": x})
