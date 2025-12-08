@@ -19,15 +19,26 @@ CHROMA_DIR = os.path.join(DATA_DIR, "chroma")
 def _load_full_resume() -> str:
     """Load the full resume text from file (1-2 pages, perfect for full context)."""
     resume_path = os.path.join(DATA_DIR, "resume.txt")
+    logger.info(f"🔍 Attempting to load resume from: {resume_path}")
+    logger.info(f"🔍 DATA_DIR exists: {os.path.exists(DATA_DIR)}")
+    logger.info(f"🔍 Resume file exists: {os.path.exists(resume_path)}")
+    
     if os.path.exists(resume_path):
         try:
             with open(resume_path, "r", encoding="utf-8") as f:
                 text = f.read().strip()
             if text:
-                logger.info(f"📄 Loaded full resume ({len(text)} chars)")
+                logger.info(f"✅ Loaded full resume ({len(text)} chars)")
+                logger.debug(f"📄 Resume preview (first 200 chars): {text[:200]}...")
                 return text
+            else:
+                logger.error(f"❌ Resume file exists but is EMPTY!")
         except Exception as e:
-            logger.warning(f"⚠ Could not load full resume: {e}")
+            logger.error(f"❌ Could not load full resume: {e}", exc_info=True)
+    else:
+        logger.error(f"❌ Resume file NOT FOUND at: {resume_path}")
+        logger.error(f"❌ Make sure resume has been uploaded via /ingest endpoint")
+    
     return ""
 
 
@@ -95,7 +106,16 @@ def build_generator_chain():
     
     def get_full_resume(inputs):
         # Load full resume text - this is the PRIMARY source for resume info
+        # Load it fresh each time to ensure we have the latest version
         full_resume = _load_full_resume()
+        if not full_resume or full_resume.startswith("ERROR:"):
+            error_msg = "CRITICAL ERROR: Resume file is missing or empty. The LLM cannot generate accurate answers without the resume. Please upload your resume via the /ingest endpoint first. Without the resume, the system will generate placeholder text which is incorrect."
+            logger.error(f"❌ {error_msg}")
+            return error_msg
+        logger.info(f"✅ Full resume loaded for generation ({len(full_resume)} chars)")
+        # Log a preview to verify it's actual content
+        preview = full_resume[:100].replace('\n', ' ')
+        logger.info(f"📄 Resume preview: {preview}...")
         return full_resume
 
     def retrieve_summary(inputs):
@@ -127,17 +147,32 @@ def build_generator_chain():
             "chat_history",
             "full_interview_context"
         ],
-        template="""
-You are an advanced INTERVIEW COPILOT.  
+        template="""You are an advanced INTERVIEW COPILOT.  
 Your job is to produce a natural, spoken answer for the candidate.
+
+⚠️ CRITICAL: If the resume text below starts with "ERROR:" or "CRITICAL ERROR:", DO NOT generate an answer. Instead, return: "ERROR: Resume not loaded. Please upload resume first."
 
 ====================================================
 📄 **COMPLETE RESUME (FULL TEXT - PRIMARY SOURCE)**  
 THIS IS THE CANDIDATE'S COMPLETE RESUME. Study it carefully and use it as the PRIMARY source for all resume-related questions.
-Use specific details from this resume - names, companies, technologies, projects, achievements.
-NEVER use placeholder text like "[your field]" or "[mention key responsibilities]".
-ALWAYS use actual information from this resume:
 
+🚨 ABSOLUTE REQUIREMENTS - NO EXCEPTIONS:
+1. Read the resume text below WORD BY WORD
+2. Extract ACTUAL names, companies, technologies, projects, achievements
+3. Use EXACT information from the resume - do NOT make up or use placeholders
+4. If the resume says "Python, Django, React" - use those EXACT technologies
+5. If the resume says "Worked at Google" - say "Google", NOT "[Company Name]"
+6. NEVER use brackets like [your field], [Company Name], [mention key responsibilities], [specific field or industry]
+7. NEVER use placeholder text or generic statements
+8. If you don't see specific info in the resume, say what you DO see, don't use placeholders
+9. FORBIDDEN PATTERNS (DO NOT USE):
+   - "[specific field or industry]"
+   - "[Company Name]"
+   - "[mention key responsibilities]"
+   - "[your field]"
+   - Any text in square brackets [like this]
+
+RESUME TEXT (READ THIS CAREFULLY):
 {full_resume_text}
 
 ====================================================
@@ -168,18 +203,26 @@ Use this to avoid repeating mistakes and improve consistency:
 ### 🔥 TASK
 Generate an answer the candidate should SAY OUT LOUD.
 
-RULES:
-- Keep it 2–4 sentences.
-- Be confident, conversational, and natural.
-- Use FIRST PERSON ("I", "my experience…")
-- DO NOT repeat the interviewer's question.
-- Ground answer in transcript FIRST.
-- ALWAYS use ACTUAL details from the complete resume above.
-- NEVER use placeholder text or generic statements.
-- Use specific: company names, technologies, project names, achievements from the resume.
-- Sound human, not scripted.
+CRITICAL RULES - READ CAREFULLY:
+1. Keep it 2–4 sentences.
+2. Be confident, conversational, and natural.
+3. Use FIRST PERSON ("I", "my experience…")
+4. DO NOT repeat the interviewer's question.
+5. Ground answer in transcript FIRST.
+6. **MANDATORY: Use ONLY ACTUAL details from the resume above**
+7. **FORBIDDEN: NEVER use placeholder text like "[your field]", "[Company Name]", "[mention key responsibilities]"**
+8. **FORBIDDEN: NEVER use generic statements - ALWAYS be specific**
+9. Use EXACT: company names, technologies, project names, achievements from the resume
+10. If you don't see specific info in the resume, say what you DO see, don't use placeholders
+11. Sound human, not scripted.
 
-Now produce ONLY the candidate's spoken answer:
+EXAMPLE OF BAD ANSWER (DO NOT DO THIS):
+"I'm [Name], and I have a strong background in [your field], having worked at [Company Name]..."
+
+EXAMPLE OF GOOD ANSWER (DO THIS):
+"I'm Eduard Mojar, and I have 5 years of experience in software engineering, having worked at TechCorp where I developed web applications using Python and React. I've led a team of 3 developers and delivered projects that increased user engagement by 40%."
+
+Now produce ONLY the candidate's spoken answer using ACTUAL resume details:
 """,
     )
 
